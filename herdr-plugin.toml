@@ -17,24 +17,24 @@ platforms = ["linux", "macos"]
 [[panes]]
 id = "notion"
 title = "Notion"
-placement = "overlay"
+placement = "split"
 command = ["python3", "-m", "herdr_notion"]
 
-# Default: open over the current pane (zoomed overlay; quit returns to it).
+# Default: split beside the pane you run it from, in the same tab (one per tab).
 [[actions]]
 id = "open-notion"
 title = "Notion: open"
-description = "Open the Notion TUI over the current pane; quit returns to it."
-command = ["bash", "scripts/open-notion.sh", "overlay"]
-
-[[actions]]
-id = "open-notion-split"
-title = "Notion: open (split)"
-description = "Open the Notion TUI in a split pane beside the current work."
+description = "Open the Notion TUI in a split beside the current pane (focus it if already open in this tab)."
 command = ["bash", "scripts/open-notion.sh", "split"]
 
 [[actions]]
+id = "open-notion-overlay"
+title = "Notion: open (overlay)"
+description = "Open the Notion TUI as a zoomed overlay over the current pane."
+command = ["bash", "scripts/open-notion.sh", "overlay"]
+
+[[actions]]
 id = "open-notion-tab"
-title = "Notion: open (tab)"
+title = "Notion: open (new tab)"
 description = "Open the Notion TUI in its own tab."
 command = ["bash", "scripts/open-notion.sh", "tab"]
