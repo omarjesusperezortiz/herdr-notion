@@ -1,0 +1,87 @@
+# herdr-notion configuration.
+#
+#   mkdir -p "$(herdr plugin config-dir herdr-notion)"
+#   cp config.example.toml "$(herdr plugin config-dir herdr-notion)/config.toml"
+#
+# The running pane reloads the config on `R`.
+
+[notion]
+# Id of the database (the 32-hex part of its URL). The database must be shared
+# with your integration (see the README).
+database_id = "00000000000000000000000000000000"
+
+# Shell command that prints the integration token. The token is never stored
+# in this file. Example for the macOS keychain:
+#   security add-generic-password -s notion-token -a "$USER" -w '<TOKEN>'
+api_token_cmd = "security find-generic-password -s notion-token -w"
+
+# Optional. Only needed if the database has several data sources
+# (Notion API 2025-09-03); by default the first one is used.
+# data_source_id = ""
+
+# Name of the status (or select) property that `s` changes.
+status_property = "Status"
+
+# Columns shown in the list besides the title. Names of database properties.
+columns = ["Status", "Assignee"]
+
+# Property used by `/` title search. Leave empty to auto-detect the title property.
+# title_property = "Name"
+
+# Notion user id substituted for {me} in filters (a person property filter
+# needs an id, not a name). Find yours in the API response of any page.
+me_user_id = "00000000-0000-0000-0000-000000000000"
+
+page_size = 50
+
+# Named filters, switched with `f` or 1-9. `filter` is a raw Notion filter
+# object (https://developers.notion.com/reference/filter-data-source-entries).
+# Strings may use {me}. `sort` is optional.
+
+[[filters]]
+name = "All"
+
+[[filters]]
+name = "Mine"
+filter = { property = "Assignee", people = { contains = "{me}" } }
+sort = { property = "Last edited", direction = "descending" }
+
+[[filters]]
+name = "Open"
+filter = { and = [
+  { property = "Status", status = { does_not_equal = "Done" } },
+  { property = "Assignee", people = { contains = "{me}" } },
+] }
+
+[delegate]
+# Prompt sent to the agent you pick with `d`. Placeholders:
+#   {title} {url} {id} {status} {properties} {body}
+prompt = """
+You are asked to work on this Notion page: {title}
+Link: {url}
+Status: {status}
+
+Properties:
+{properties}
+
+Content:
+{body}
+
+Please do the work it describes and summarize what you changed when done.
+"""
+max_body_chars = 6000
+# default_cwd = "~/projects"
+
+# Start-new-agent wait: after `startup_delay_ms`, wait up to `wait_ready_ms`
+# for the agent to be detected and idle before sending the prompt.
+startup_delay_ms = 1500
+wait_ready_ms = 30000
+
+# Agents offered by "+ start new agent..." (name, argv).
+[[delegate.agents]]
+name = "claude"
+command = ["claude"]
+
+[[delegate.agents]]
+name = "codex"
+command = ["codex"]

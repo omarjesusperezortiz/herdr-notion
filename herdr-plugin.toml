@@ -1,0 +1,33 @@
+# herdr-plugin.toml: manifest for the herdr-notion plugin.
+#
+# A keyboard-driven TUI for one Notion database that lives in a herdr pane:
+# browse named filters, search by title, read a page, change its status, and
+# delegate it to an agent running in herdr.
+#
+# Config lives outside the checkout: see `herdr plugin config-dir herdr-notion`.
+# Copy config.example.toml there as config.toml.
+
+id = "herdr-notion"
+name = "herdr-notion"
+version = "0.1.0"
+description = "Notion database TUI in a herdr pane: filters, title search, page view, status change, and one-key delegation of pages to agents."
+min_herdr_version = "0.8.0"
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "notion"
+title = "Notion"
+placement = "split"
+command = ["python3", "-m", "herdr_notion"]
+
+[[actions]]
+id = "open-notion"
+title = "Notion: open (split)"
+description = "Open the Notion TUI in a split pane beside the current work."
+command = ["bash", "scripts/open-notion.sh"]
+
+[[actions]]
+id = "open-notion-tab"
+title = "Notion: open (tab)"
+description = "Open the Notion TUI in its own tab."
+command = ["bash", "scripts/open-notion-tab.sh"]
