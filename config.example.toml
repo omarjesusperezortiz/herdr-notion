@@ -14,7 +14,7 @@ database_id = "00000000000000000000000000000000"
 # stored in this file). Without it the plugin uses $NOTION_TOKEN, then the
 # `token` file written by the first-run setup. Example for the macOS keychain:
 #   security add-generic-password -s notion-token -a "$USER" -w '<TOKEN>'
-api_token_cmd = "security find-generic-password -s notion-token -w"
+# api_token_cmd = "security find-generic-password -s notion-token -w"
 
 # Optional. Only needed if the database has several data sources
 # (Notion API 2025-09-03); by default the first one is used.
