@@ -1,5 +1,6 @@
 """Notion REST client (urllib) plus pure helpers: filters, flattening."""
 import json
+import unicodedata
 import urllib.error
 import urllib.request
 
@@ -261,6 +262,41 @@ def display_line(line, kind):
     if t.startswith("- "):
         return ind + "• " + t[2:]
     return line
+
+
+def clean(text):
+    """One line of text: newlines, tabs and runs of spaces become single spaces."""
+    return " ".join((text or "").split())
+
+
+def cell_width(text):
+    """Terminal cells used by `text` (wide CJK/emoji count 2, combining marks 0)."""
+    n = 0
+    for ch in text:
+        if unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+            continue
+        n += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return n
+
+
+def clip(text, width):
+    """Cut `text` to at most `width` cells, ending with '…' when shortened."""
+    text = clean(text)
+    if cell_width(text) <= width:
+        return text
+    out, used = "", 0
+    for ch in text:
+        w = cell_width(ch)
+        if used + w > width - 1:
+            break
+        out, used = out + ch, used + w
+    return out + "…" if width > 0 else ""
+
+
+def pad(text, width):
+    """Clip to `width` cells and pad with spaces up to exactly `width` cells."""
+    text = clip(text, width)
+    return text + " " * (width - cell_width(text))
 
 
 def fit_hints(hints, width):

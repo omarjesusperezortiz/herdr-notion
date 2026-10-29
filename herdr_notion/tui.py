@@ -3,6 +3,8 @@ import curses
 import os
 import shutil
 import subprocess
+import textwrap
+import traceback
 import webbrowser
 
 from . import config as cfgmod
@@ -162,18 +164,18 @@ class App:
             base = curses.A_REVERSE if on else 0
             self.scr.addnstr(y, 0, " " * (w - 1), w - 1, base)
             self.scr.addnstr(y, 0, "▌" if on else " ", 1, base | self.cp(2))
-            self.scr.addnstr(y, 2, nt.page_title(p)[:tw], tw, base | (curses.A_BOLD if on else 0))
+            self.scr.addstr(y, 2, nt.clip(nt.page_title(p), tw), base | (curses.A_BOLD if on else 0))
             x = 2 + tw
             for n, cw in cols:
                 x += 2
                 if n == "STATUS":
                     mark, text, attr = self.status_cell(p)
-                    self.scr.addnstr(y, x, ("%s %s" % (mark, text))[:cw], cw, base | attr)
+                    self.scr.addstr(y, x, nt.clip("%s %s" % (mark, text), cw), base | attr)
                 elif n == "EDITED":
                     self.scr.addnstr(y, x, nt.relative_time(p.get("last_edited_time")), cw, base | curses.A_DIM)
                 else:
                     key = next(c for c in extra if c.upper() == n)
-                    self.scr.addnstr(y, x, nt.prop_text(p["properties"].get(key))[:cw], cw, base)
+                    self.scr.addstr(y, x, nt.clip(nt.prop_text(p["properties"].get(key)), cw), base)
                 x += cw
         if not self.pages:
             self.scr.addnstr(4, 2, "No pages match this filter.", w - 3, curses.A_DIM)
@@ -242,7 +244,8 @@ class App:
         sel = start
         while True:
             h, w = self.scr.getmaxyx()
-            bw = min(w - 2, max([len(title)] + [len(i) + 5 for i in items]) + 2)
+            items = [nt.clean(i) for i in items]
+            bw = min(w - 2, max([nt.cell_width(title)] + [nt.cell_width(i) + 5 for i in items]) + 2)
             bh = min(h - 2, len(items) + 2)
             y0, x0 = (h - bh) // 2, (w - bw) // 2
             win = curses.newwin(bh, bw, y0, x0)
@@ -252,8 +255,8 @@ class App:
             for r, it in enumerate(items[first:first + bh - 2]):
                 i = first + r
                 tag = "%d " % (i + 1) if i < 9 else "  "
-                win.addnstr(1 + r, 1, (tag + it).ljust(bw - 2), bw - 2,
-                            curses.A_REVERSE if i == sel else 0)
+                row = tag + nt.pad(it, bw - 2 - len(tag))
+                win.addstr(1 + r, 1, row, curses.A_REVERSE if i == sel else 0)
             win.refresh()
             k = self.scr.getch()
             if k in (27, ord("q")):
@@ -385,9 +388,12 @@ class App:
         """Draw a text screen; wait for a key and return it when `key`."""
         h, w = self.scr.getmaxyx()
         self.scr.erase()
-        for i, l in enumerate(lines[:h - 2]):
-            bold = i == 0
-            self.scr.addnstr(1 + i, 2, l, w - 4, curses.A_BOLD if bold else 0)
+        rows = []
+        for i, l in enumerate(lines):
+            for part in (textwrap.wrap(nt.clean(l) if i else l, max(w - 4, 10), break_long_words=False, break_on_hyphens=False) or [""]):
+                rows.append((part, i == 0))
+        for i, (part, bold) in enumerate(rows[:h - 2]):
+            self.scr.addnstr(1 + i, 2, part, w - 4, curses.A_BOLD if bold else 0)
         self.scr.refresh()
         return self.scr.getch() if key else None
 
@@ -588,6 +594,28 @@ class App:
         return True
 
 
+def log_path():
+    d = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.dirname(cfgmod.config_path())
+    return os.path.join(d, "error.log")
+
+
 def main():
     os.environ.setdefault("ESCDELAY", "25")
-    curses.wrapper(lambda scr: App(scr).run())
+    try:
+        curses.wrapper(lambda scr: App(scr).run())
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:  # keep the pane readable instead of dumping a traceback
+        path = log_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(traceback.format_exc() + "\n")
+            where = "Details: %s" % path
+        except OSError:
+            where = ""
+        print("herdr-notion crashed: %s: %s\n%s\nPress Enter to close." % (type(e).__name__, e, where))
+        try:
+            input()
+        except EOFError:
+            pass

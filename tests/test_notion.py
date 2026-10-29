@@ -159,6 +159,31 @@ class BodyStyle(unittest.TestCase):
         self.assertIsNone(nt.clipboard_cmd(lambda c: None))
 
 
+class TextWidth(unittest.TestCase):
+    def test_clean_collapses_whitespace(self):
+        self.assertEqual(nt.clean("a\nb\tc   d "), "a b c d")
+        self.assertEqual(nt.clean(None), "")
+
+    def test_cell_width(self):
+        self.assertEqual(nt.cell_width("abc"), 3)
+        self.assertEqual(nt.cell_width("日本"), 4)
+        self.assertEqual(nt.cell_width("📋"), 2)
+        self.assertEqual(nt.cell_width("e\u0301"), 1)  # combining accent
+
+    def test_clip_never_exceeds_width(self):
+        for text in ["plain text here", "📋 Tareas 🚀 del equipo", "日本語のデータベース", "x" * 200]:
+            for w in range(0, 30):
+                self.assertLessEqual(nt.cell_width(nt.clip(text, w)), w)
+
+    def test_clip_marks_truncation_only_when_cut(self):
+        self.assertEqual(nt.clip("short", 10), "short")
+        self.assertEqual(nt.clip("abcdefghij", 5), "abcd…")
+
+    def test_pad_is_exact(self):
+        for text in ["a", "日本語", "📋 x", "long " * 20]:
+            self.assertEqual(nt.cell_width(nt.pad(text, 12)), 12)
+
+
 class FitHints(unittest.TestCase):
     H = [("⏎", "open"), ("s", "status"), ("d", "delegate"), ("f", "filters"), ("/", "search"), ("?", "more")]
 
