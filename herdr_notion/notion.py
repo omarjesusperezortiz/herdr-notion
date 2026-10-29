@@ -177,6 +177,47 @@ def status_options(schema, prop_name):
     return kind, [o["name"] for o in p[kind].get("options", [])]
 
 
+def status_groups(schema, prop_name):
+    """Map option name -> group name (to_do, in_progress, complete) for a status property."""
+    p = (schema.get("properties") or {}).get(prop_name) or {}
+    st = p.get("status") or {}
+    by_id = {o.get("id"): o["name"] for o in st.get("options", [])}
+    out = {}
+    for g in st.get("groups", []):
+        for oid in g.get("option_ids", []):
+            if oid in by_id:
+                out[by_id[oid]] = g.get("name", "")
+    return out
+
+
+def group_kind(group_name):
+    """Normalize a group name to 'todo' | 'progress' | 'done' | ''."""
+    g = (group_name or "").lower().replace(" ", "_")
+    if g in ("to_do", "todo"):
+        return "todo"
+    if g == "in_progress":
+        return "progress"
+    if g in ("complete", "done"):
+        return "done"
+    return ""
+
+
+def relative_time(iso, now=None):
+    """'5m', '2h', '3d', '6w', '2y' for an ISO-8601 timestamp; '' if unparsable."""
+    from datetime import datetime, timezone
+    try:
+        t = datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    secs = max(0, int(((now or datetime.now(timezone.utc)) - t).total_seconds()))
+    for unit, n in (("y", 31536000), ("w", 604800), ("d", 86400), ("h", 3600), ("m", 60)):
+        if secs >= n:
+            return "%d%s" % (secs // n, unit)
+    return "now"
+
+
 def status_patch(prop_name, kind, option):
     return {"properties": {prop_name: {kind: {"name": option}}}}
 

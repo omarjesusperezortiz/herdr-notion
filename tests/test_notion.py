@@ -116,6 +116,31 @@ class Status(unittest.TestCase):
                          {"properties": {"Status": {"status": {"name": "Done"}}}})
 
 
+class Layout(unittest.TestCase):
+    def test_relative_time(self):
+        from datetime import datetime, timezone
+        now = datetime(2026, 1, 10, 12, 0, tzinfo=timezone.utc)
+        rt_ = lambda iso: nt.relative_time(iso, now)
+        self.assertEqual(rt_("2026-01-10T11:59:40.000Z"), "now")
+        self.assertEqual(rt_("2026-01-10T11:30:00.000Z"), "30m")
+        self.assertEqual(rt_("2026-01-10T10:00:00.000Z"), "2h")
+        self.assertEqual(rt_("2026-01-07T12:00:00.000Z"), "3d")
+        self.assertEqual(rt_("2025-11-01T12:00:00.000Z"), "10w")
+        self.assertEqual(rt_(""), "")
+        self.assertEqual(rt_("garbage"), "")
+
+    def test_status_groups(self):
+        schema = {"properties": {"Status": {"type": "status", "status": {
+            "options": [{"id": "a", "name": "To do"}, {"id": "b", "name": "Doing"}, {"id": "c", "name": "Done"}],
+            "groups": [{"name": "To-do", "option_ids": ["a"]}, {"name": "In progress", "option_ids": ["b"]},
+                       {"name": "Complete", "option_ids": ["c"]}]}}}}
+        g = nt.status_groups(schema, "Status")
+        self.assertEqual({k: nt.group_kind(v) for k, v in g.items()},
+                         {"To do": "todo", "Doing": "progress", "Done": "done"})
+        self.assertEqual(nt.status_groups({}, "Status"), {})
+        self.assertEqual(nt.group_kind("Something else"), "")
+
+
 class Prompt(unittest.TestCase):
     PAGE = Properties.PAGE
 

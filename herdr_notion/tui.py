@@ -35,6 +35,8 @@ class App:
         self.dscroll = 0
         self.cache = {}  # page id -> body lines
         self.title_prop = ""
+        self.groups = {}
+        self.colors = False
 
     # ------------------------------------------------------------ setup
     def load_config(self):
@@ -42,6 +44,7 @@ class App:
         token = cfgmod.read_token(cfg["api_token_cmd"])
         self.client = nt.Client(token, cfg["database_id"], cfg["data_source_id"])
         self.title_prop = cfg["title_property"]
+        self.groups = {}
         self.fidx = 0
         self.cfg = cfg
 
@@ -65,6 +68,7 @@ class App:
         schema = self.client.discover()
         if not self.title_prop:
             self.title_prop = nt.title_property_name(schema.get("properties", {}))
+        self.groups = nt.status_groups(schema, self.cfg["status_property"])
         flt = self.cfg["filters"][self.fidx]
         body = nt.build_query(flt, self.query, self.title_prop, self.cfg["me_user_id"],
                               self.cfg["page_size"])
@@ -90,44 +94,135 @@ class App:
         return self.pages[self.sel] if self.pages else None
 
     # ------------------------------------------------------------ drawing
+    MARK = {"todo": "○", "progress": "◐", "done": "✓", "": "●"}
+    PAIR = {"todo": 1, "progress": 2, "done": 3, "": 0}
+
+    def init_colors(self):
+        self.colors = False
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_YELLOW, -1)
+            curses.init_pair(2, curses.COLOR_CYAN, -1)
+            curses.init_pair(3, curses.COLOR_GREEN, -1)
+            curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_CYAN)  # active tab
+            self.colors = True
+        except curses.error:
+            pass
+
+    def cp(self, n):
+        return curses.color_pair(n) if self.colors else 0
+
+    def status_cell(self, page):
+        """(marker, text, color attr) for the status property of a page."""
+        prop = self.cfg["status_property"]
+        text = nt.prop_text(page["properties"].get(prop))
+        kind = nt.group_kind(self.groups.get(text, ""))
+        return self.MARK[kind], text, self.cp(self.PAIR[kind])
+
+    def rule(self, y, w):
+        self.scr.addnstr(y, 0, "─" * (w - 1), w - 1, curses.A_DIM)
+
+    def draw_tabs(self, w):
+        x = 1
+        self.scr.addnstr(0, 0, " Notion ", w - 1, curses.A_BOLD)
+        x = 9
+        for i, f in enumerate(self.cfg["filters"]):
+            label = " %d %s " % (i + 1, f["name"])
+            if x + len(label) >= w:
+                break
+            self.scr.addnstr(0, x, label, w - 1 - x,
+                             self.cp(4) | curses.A_BOLD if i == self.fidx and self.colors
+                             else curses.A_REVERSE if i == self.fidx else curses.A_DIM)
+            x += len(label) + 1
+        right = "%d pages%s " % (len(self.pages), ' · / "%s"' % self.query if self.query else "")
+        if x + len(right) < w:
+            self.scr.addnstr(0, w - 1 - len(right), right, len(right), curses.A_DIM)
+
     def draw_list(self):
         h, w = self.scr.getmaxyx()
         self.scr.erase()
-        flt = self.cfg["filters"][self.fidx]["name"]
-        head = "Notion: %s%s (%d)" % (flt, ' / "%s"' % self.query if self.query else "", len(self.pages))
-        self.scr.addnstr(0, 0, head, w, curses.A_BOLD)
-        cols = self.cfg["columns"]
-        widths = [min(16, max([len(c)] + [len(nt.prop_text(p["properties"].get(c))) for p in self.pages]))
-                  for c in cols]
-        tw = max(10, w - 2 - sum(x + 2 for x in widths))
-        rows = h - 3
+        self.draw_tabs(w)
+        self.rule(1, w)
+        # Columns right of the title, in priority order: status, other columns, edited.
+        # They are dropped from the right until the title has at least 20 columns.
+        extra = [c for c in self.cfg["columns"] if c != self.cfg["status_property"]]
+        cols = [("STATUS", 14)] + [(c.upper(), min(14, max(len(c), 6))) for c in extra] + [("EDITED", 6)]
+        while cols and w - 4 - sum(cw + 2 for _, cw in cols) < 20:
+            cols.pop()
+        tw = max(10, w - 4 - sum(cw + 2 for _, cw in cols))
+        head = "  " + "TITLE".ljust(tw) + "".join("  " + n.ljust(cw) for n, cw in cols)
+        self.scr.addnstr(2, 0, head, w - 1, curses.A_DIM | curses.A_BOLD)
+        rows = h - 6
         if self.sel < self.top:
             self.top = self.sel
         if self.sel >= self.top + rows:
             self.top = self.sel - rows + 1
         for r, p in enumerate(self.pages[self.top:self.top + rows]):
-            cells = [nt.page_title(p)[:tw].ljust(tw)]
-            cells += [nt.prop_text(p["properties"].get(c))[:wd].ljust(wd) for c, wd in zip(cols, widths)]
-            attr = curses.A_REVERSE if self.top + r == self.sel else 0
-            self.scr.addnstr(1 + r, 0, ("  ".join(cells)).ljust(w - 1), w - 1, attr)
-        self.footer("Enter open · f filters · / search · s status · d delegate · o browser · ? help")
+            y, on = 3 + r, self.top + r == self.sel
+            base = curses.A_REVERSE if on else 0
+            self.scr.addnstr(y, 0, " " * (w - 1), w - 1, base)
+            self.scr.addnstr(y, 0, "▌" if on else " ", 1, base | self.cp(2))
+            self.scr.addnstr(y, 2, nt.page_title(p)[:tw], tw, base | (curses.A_BOLD if on else 0))
+            x = 2 + tw
+            for n, cw in cols:
+                x += 2
+                if n == "STATUS":
+                    mark, text, attr = self.status_cell(p)
+                    self.scr.addnstr(y, x, ("%s %s" % (mark, text))[:cw], cw, base | attr)
+                elif n == "EDITED":
+                    self.scr.addnstr(y, x, nt.relative_time(p.get("last_edited_time")), cw, base | curses.A_DIM)
+                else:
+                    key = next(c for c in extra if c.upper() == n)
+                    self.scr.addnstr(y, x, nt.prop_text(p["properties"].get(key))[:cw], cw, base)
+                x += cw
+        if not self.pages:
+            self.scr.addnstr(4, 2, "No pages match this filter.", w - 3, curses.A_DIM)
+        self.rule(h - 3, w)
+        self.footer("⏎ open  f filters  / search  s status  d delegate  ? more")
 
     def draw_detail(self):
         h, w = self.scr.getmaxyx()
         self.scr.erase()
+        page = self.detail["page"]
+        mark, stext, sattr = self.status_cell(page)
+        right = "%s %s" % (mark, stext)
+        self.scr.addnstr(0, 0, " ‹ " + nt.page_title(page), w - len(right) - 3, curses.A_BOLD)
+        if len(right) + 2 < w:
+            self.scr.addnstr(0, w - len(right) - 1, right, len(right), sattr | curses.A_BOLD)
+        self.rule(1, w)
+        # property block in two columns, then the link, then the body
+        props = [kv for kv in nt.page_properties(page) if kv[0] != self.cfg["status_property"]]
+        half = (w - 2) // 2 if w >= 60 else w - 2
         lines = []
-        for l in self.detail["lines"]:
-            lines += [l[i:i + w - 1] for i in range(0, max(len(l), 1), max(w - 1, 1))]
-        self.dscroll = max(0, min(self.dscroll, max(0, len(lines) - (h - 2))))
-        for r, l in enumerate(lines[self.dscroll:self.dscroll + h - 2]):
-            self.scr.addnstr(r, 0, l, w - 1, curses.A_BOLD if self.dscroll + r == 0 else 0)
-        self.footer("j/k scroll · s status · d delegate · o browser · q back")
-        self._dlen = len(lines)
+        step = 2 if w >= 60 else 1
+        for i in range(0, len(props), step):
+            row = ""
+            for k, v in props[i:i + step]:
+                row += ("%-9s %s" % (k[:9], v)).ljust(half)[:half]
+            lines.append((" " + row, 0))
+        lines += [(" " + page.get("url", ""), curses.A_DIM), ("", 0), ("─" * (w - 1), curses.A_DIM)]
+        for l in self.detail["body"].split("\n"):
+            attr = curses.A_BOLD if l.startswith("#") else 0
+            wrapped = [l[i:i + w - 3] for i in range(0, max(len(l), 1), max(w - 3, 1))]
+            lines += [(" " + x, attr) for x in wrapped]
+        view = h - 5
+        self.dscroll = max(0, min(self.dscroll, max(0, len(lines) - view)))
+        for r, (l, attr) in enumerate(lines[self.dscroll:self.dscroll + view]):
+            self.scr.addnstr(2 + r, 0, l, w - 1, attr)
+        self.rule(h - 3, w)
+        if len(lines) > view:
+            ind = "%d%%" % min(100, 100 * (self.dscroll + view) // len(lines))
+            self.scr.addnstr(h - 1, max(0, w - len(ind) - 2), ind, len(ind), curses.A_DIM)
+        self.footer("s status  d delegate  o browser  ⏎/q back")
 
     def footer(self, text):
         h, w = self.scr.getmaxyx()
-        self.scr.addnstr(h - 2, 0, text, w - 1, curses.A_DIM)
-        self.scr.addnstr(h - 1, 0, self.msg, w - 1, curses.A_BOLD)
+        if self.msg:
+            self.scr.addnstr(h - 2, 1, self.msg, w - 2, curses.A_BOLD)
+            self.scr.addnstr(h - 1, 1, text, w - 2, curses.A_DIM)
+        else:
+            self.scr.addnstr(h - 2, 1, text, w - 2, curses.A_DIM)
 
     # ------------------------------------------------------------ popups
     def popup(self, title, items, start=0):
@@ -271,6 +366,7 @@ class App:
     def run(self):
         curses.curs_set(0)
         self.scr.keypad(True)
+        self.init_colors()
         if self.guard(self.load_config) is None and not self.cfg:
             self.scr.erase()
             self.scr.addnstr(1, 2, self.msg, self.scr.getmaxyx()[1] - 4)
