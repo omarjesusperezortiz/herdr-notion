@@ -352,6 +352,8 @@ class Client:
         if self._schema:
             return self._schema
         if not self.data_source_id:
+            if not self.database_id:
+                raise NotionError("no database configured")
             db = self.request("GET", "/databases/" + self.database_id)
             sources = db.get("data_sources") or []
             if not sources:

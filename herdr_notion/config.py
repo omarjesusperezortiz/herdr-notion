@@ -20,6 +20,10 @@ class ConfigError(Exception):
     pass
 
 
+class NeedsSetup(ConfigError):
+    """No usable config or token yet: the first-run wizard should run."""
+
+
 def config_path():
     d = os.environ.get("HERDR_PLUGIN_CONFIG_DIR")
     if not d:
@@ -33,7 +37,7 @@ def load(path=None):
         with open(path, encoding="utf-8") as f:
             raw = tomlcompat.loads(f.read())
     except FileNotFoundError:
-        raise ConfigError("config not found: %s (copy config.example.toml there)" % path)
+        raise NeedsSetup("config not found: %s" % path)
     except ValueError as e:
         raise ConfigError("%s: %s" % (path, e))
     return normalize(raw)
@@ -41,15 +45,13 @@ def load(path=None):
 
 def normalize(raw):
     n = raw.get("notion", {})
-    if not n.get("database_id"):
-        raise ConfigError("[notion] database_id is required")
-    if not n.get("api_token_cmd"):
-        raise ConfigError("[notion] api_token_cmd is required")
+    if not n.get("database_id") and not n.get("data_source_id"):
+        raise NeedsSetup("[notion] database_id is not set")
     d = raw.get("delegate", {})
     return {
-        "database_id": n["database_id"],
+        "database_id": n.get("database_id", ""),
         "data_source_id": n.get("data_source_id", ""),
-        "api_token_cmd": n["api_token_cmd"],
+        "api_token_cmd": n.get("api_token_cmd", ""),
         "status_property": n.get("status_property", "Status"),
         "columns": list(n.get("columns", [])),
         "title_property": n.get("title_property", ""),
@@ -65,6 +67,37 @@ def normalize(raw):
             "agents": d.get("agents") or [{"name": "claude", "command": ["claude"]}],
         },
     }
+
+
+def token_path():
+    return os.path.join(os.path.dirname(config_path()), "token")
+
+
+def save_token(token, path=None):
+    """Write the token owner-readable only (0600), replacing any old file."""
+    path = path or token_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(token.strip() + "\n")
+    os.chmod(path, 0o600)
+
+
+def resolve_token(cfg, environ=None, path=None):
+    """Token from api_token_cmd, else $NOTION_TOKEN, else the token file."""
+    environ = os.environ if environ is None else environ
+    if cfg.get("api_token_cmd"):
+        return read_token(cfg["api_token_cmd"])
+    if environ.get("NOTION_TOKEN"):
+        return environ["NOTION_TOKEN"].strip()
+    try:
+        with open(path or token_path(), encoding="utf-8") as f:
+            token = f.read().strip()
+    except FileNotFoundError:
+        token = ""
+    if not token:
+        raise NeedsSetup("no Notion token found")
+    return token
 
 
 def read_token(cmd):

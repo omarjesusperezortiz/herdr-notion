@@ -30,30 +30,30 @@ herdr plugin install omarjesusperezortiz/herdr-notion
 
 For local development: `herdr plugin link ./herdr-notion`.
 
-## Create a Notion integration
-
-1. Go to <https://www.notion.so/profile/integrations> and create a new
-   **internal** integration. Give it *Read content* and *Update content*
-   capabilities (update is only used when you press `s`).
-2. Copy the integration secret.
-3. Open your database in Notion, then `...` → **Connections** → add your
-   integration. An integration only sees pages that are shared with it.
-4. Copy the database id: the 32-character hex part of the database URL.
-5. Store the secret outside the config file, for example in the macOS keychain:
-
-   ```sh
-   security add-generic-password -s notion-token -a "$USER" -w '<TOKEN>'
-   ```
-
-## Configure
-
-```sh
-mkdir -p "$(herdr plugin config-dir herdr-notion)"
-cp config.example.toml "$(herdr plugin config-dir herdr-notion)/config.toml"
-```
+## Set up
 
 Open the pane from the herdr action palette (**Notion: open (split)** or
-**Notion: open (tab)**), or bind a key in `~/.config/herdr/config.toml`:
+**Notion: open (tab)**). On first run it starts a short setup:
+
+1. **Create an integration** (once): open <https://www.notion.so/profile/integrations>,
+   choose **New integration**, type **Internal**, save, and copy the secret.
+2. **Paste the secret** into the pane. It is hidden, checked against Notion, and
+   saved next to the config in a file only you can read (`token`).
+3. **Share a database with the integration** if the pane says none is shared:
+   open the database in Notion, `•••` → **Connections** → add your integration.
+   Then press `r` in the pane.
+4. **Pick the database** and its status property from lists.
+
+That writes `config.toml` with an "All" filter and, when your status property has
+a *Complete* group, an "Open" filter. Edit the file for more filters, columns and
+the delegate prompt (see below). To run the setup again, delete `config.toml`
+from `herdr plugin config-dir herdr-notion`.
+
+Token sources, first match wins: `api_token_cmd` in the config (a shell command
+that prints it, for example a keychain lookup), the `NOTION_TOKEN` environment
+variable, the `token` file.
+
+Bind a key to open it, in `~/.config/herdr/config.toml`:
 
 ```toml
 [[keys.command]]
@@ -62,15 +62,24 @@ type = "plugin_action"
 command = "herdr-notion.open-notion"
 ```
 
+### Manual setup
+
+Skip the wizard by copying the example and editing it:
+
+```sh
+mkdir -p "$(herdr plugin config-dir herdr-notion)"
+cp config.example.toml "$(herdr plugin config-dir herdr-notion)/config.toml"
+```
+
 ### Config reference
 
 `[notion]`
 
 | Key | Meaning |
 | --- | --- |
-| `database_id` | Required. The database to browse. |
-| `api_token_cmd` | Required. Shell command that prints the token. The token is never stored in the config. |
-| `data_source_id` | Optional. Only for databases with several data sources; the first is used by default. |
+| `database_id` | The database to browse (or give `data_source_id`). |
+| `api_token_cmd` | Optional. Shell command that prints the token; the token is never stored in the config. Without it, `$NOTION_TOKEN` and then the `token` file are used. |
+| `data_source_id` | Optional with `database_id`. Needed for databases with several data sources; the first is used by default. |
 | `status_property` | Status (or select) property that `s` changes. Default `Status`. |
 | `columns` | Property names shown next to the title in the list. |
 | `title_property` | Property searched by `/`. Auto-detected if empty. |
@@ -124,9 +133,9 @@ the prompt. If it never becomes ready, nothing is sent.
   body styling, property rendering, filter/query building, status patch body, prompt
   template, config and TOML parsing, delegate command sequences with a fake
   herdr runner.
-- Driven end to end in a pty against mocked Notion responses: list, open,
-  status change.
-- **Not tested against real Notion:** authentication, the data source
+- Driven end to end in a pty against mocked Notion responses: setup wizard
+  (bad secret, nothing shared, pick a database), list, open, status change.
+- **Not tested against real Notion:** authentication, `/users/me` and `/search` used by the setup, the data source
   discovery and query calls, pagination, `PATCH` of a status property, and
   rarely used property and block types.
 - **Not tested against a real agent:** the delegate flow, especially starting a

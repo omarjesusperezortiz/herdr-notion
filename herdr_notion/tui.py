@@ -8,6 +8,7 @@ import webbrowser
 from . import config as cfgmod
 from . import delegate as dg
 from . import notion as nt
+from . import setup as st
 
 HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
@@ -39,7 +40,7 @@ class App:
     # ------------------------------------------------------------ setup
     def load_config(self):
         cfg = cfgmod.load()
-        token = cfgmod.read_token(cfg["api_token_cmd"])
+        token = cfgmod.resolve_token(cfg)
         self.client = nt.Client(token, cfg["database_id"], cfg["data_source_id"])
         self.title_prop = cfg["title_property"]
         self.groups = {}
@@ -267,15 +268,16 @@ class App:
                 return k - ord("1")
             self.scr.touchwin()
 
-    def ask(self, label, initial=""):
-        """One-line text input; Esc cancels (returns None)."""
+    def ask(self, label, initial="", secret=False):
+        """One-line text input; Esc cancels (returns None). `secret` echoes *."""
         buf = initial
         curses.curs_set(1)
         try:
             while True:
                 h, w = self.scr.getmaxyx()
-                self.scr.addnstr(h - 1, 0, (label + buf).ljust(w - 1), w - 1)
-                self.scr.move(h - 1, min(len(label) + len(buf), w - 1))
+                shown = "*" * len(buf) if secret else buf
+                self.scr.addnstr(h - 1, 0, (label + shown).ljust(w - 1), w - 1)
+                self.scr.move(h - 1, min(len(label) + len(shown), w - 1))
                 k = self.scr.get_wch()
                 if k == "\x1b":
                     return None
@@ -378,6 +380,78 @@ class App:
             self.query = q.strip()
             self.refresh()
 
+    # ------------------------------------------------------------ first-run setup
+    def show(self, lines, key=True):
+        """Draw a text screen; wait for a key and return it when `key`."""
+        h, w = self.scr.getmaxyx()
+        self.scr.erase()
+        for i, l in enumerate(lines[:h - 2]):
+            bold = i == 0
+            self.scr.addnstr(1 + i, 2, l, w - 4, curses.A_BOLD if bold else 0)
+        self.scr.refresh()
+        return self.scr.getch() if key else None
+
+    def wizard(self):
+        """Connect a token and pick a database. Writes config.toml and the token
+        file. Returns True when the config is ready."""
+        self.show(["Welcome to herdr-notion", "",
+                   "1. Open https://www.notion.so/profile/integrations",
+                   "2. New integration, type Internal, save, and copy the secret.",
+                   "", "Press a key, then paste the secret (it is hidden). Esc quits."])
+        client = None
+        while client is None:
+            self.scr.erase()
+            self.show(["Paste the integration secret below", "", self.msg], key=False)
+            token = self.ask("secret: ", secret=True)
+            if token is None:
+                return False
+            token = token.strip()
+            try:
+                me = nt.Client(token, "").request("GET", "/users/me")
+                client = nt.Client(token, "")
+                self.msg = ""
+            except nt.NotionError as e:
+                self.msg = str(e)
+        name = me.get("name") or "your integration"
+        try:
+            while True:
+                choices = st.database_choices(client.request("POST", "/search", st.SEARCH_BODY))
+                if choices:
+                    break
+                k = self.show(["Connected as %s" % name, "",
+                               "No database is shared with it yet. In Notion:",
+                               "  open your database, click ••• (top right) → Connections,",
+                               "  and add %s." % name, "",
+                               "Press r to check again, q to quit."])
+                if k in (ord("q"), 27):
+                    return False
+            self.show(["Connected as %s" % name, "", "Pick the database to browse."], key=False)
+            i = self.popup("Database", [c["title"] for c in choices])
+            if i is None:
+                return False
+            choice = choices[i]
+            schema = client.request("GET", "/data_sources/" + choice["id"])
+            status_prop = ""
+            options = st.status_candidates(schema)
+            if len(options) == 1:
+                status_prop = options[0]
+            elif options:
+                j = self.popup("Status property (changed with s)", options)
+                if j is None:
+                    return False
+                status_prop = options[j]
+            elif not self.confirm("No status property found; s will be disabled. Continue?"):
+                return False
+        except nt.NotionError as e:
+            self.show(["Setup failed", "", str(e), "", "Press any key."])
+            return False
+        os.makedirs(os.path.dirname(cfgmod.config_path()), exist_ok=True)
+        with open(cfgmod.config_path(), "w", encoding="utf-8") as f:
+            f.write(st.render_config(choice, schema, status_prop))
+        cfgmod.save_token(token)
+        self.msg = "Connected to %s" % choice["title"]
+        return True
+
     def help(self):
         rows = []
         for title, items in HELP:
@@ -423,11 +497,15 @@ class App:
         curses.curs_set(0)
         self.scr.keypad(True)
         self.init_colors()
-        if self.guard(self.load_config) is None and not self.cfg:
-            self.scr.erase()
-            self.scr.addnstr(1, 2, self.msg, self.scr.getmaxyx()[1] - 4)
-            self.scr.addnstr(3, 2, "Press any key to quit.", 30)
-            self.scr.getch()
+        try:
+            try:
+                self.load_config()
+            except cfgmod.NeedsSetup:
+                if not self.wizard():
+                    return
+                self.load_config()
+        except (cfgmod.ConfigError, nt.NotionError) as e:
+            self.show([str(e), "", "Press any key to quit."])
             return
         self.guard(self.refresh)
         while True:

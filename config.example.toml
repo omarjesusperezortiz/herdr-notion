@@ -10,8 +10,9 @@
 # with your integration (see the README).
 database_id = "00000000000000000000000000000000"
 
-# Shell command that prints the integration token. The token is never stored
-# in this file. Example for the macOS keychain:
+# Optional. Shell command that prints the integration token (the token is never
+# stored in this file). Without it the plugin uses $NOTION_TOKEN, then the
+# `token` file written by the first-run setup. Example for the macOS keychain:
 #   security add-generic-password -s notion-token -a "$USER" -w '<TOKEN>'
 api_token_cmd = "security find-generic-password -s notion-token -w"
 

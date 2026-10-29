@@ -34,11 +34,19 @@ class Toml(unittest.TestCase):
 
 
 class Normalize(unittest.TestCase):
-    def test_requires_database_and_token_cmd(self):
-        with self.assertRaises(config.ConfigError):
+    def test_missing_database_means_setup(self):
+        with self.assertRaises(config.NeedsSetup):
             config.normalize({"notion": {"api_token_cmd": "x"}})
-        with self.assertRaises(config.ConfigError):
-            config.normalize({"notion": {"database_id": "x"}})
+        with self.assertRaises(config.NeedsSetup):
+            config.normalize({})
+
+    def test_data_source_id_alone_is_enough(self):
+        cfg = config.normalize({"notion": {"data_source_id": "ds"}})
+        self.assertEqual((cfg["database_id"], cfg["data_source_id"]), ("", "ds"))
+
+    def test_missing_file_means_setup(self):
+        with self.assertRaises(config.NeedsSetup):
+            config.load("/nonexistent/dir/config.toml")
 
     def test_defaults(self):
         cfg = config.normalize({"notion": {"database_id": "d", "api_token_cmd": "echo t"}})
@@ -50,6 +58,29 @@ class Normalize(unittest.TestCase):
             config.read_token("echo secret; exit 3")
         self.assertNotIn("secret", str(cm.exception))
         self.assertEqual(config.read_token("echo tok"), "tok")
+
+
+class Token(unittest.TestCase):
+    def test_order_cmd_then_env_then_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "sub", "token")
+            with self.assertRaises(config.NeedsSetup):
+                config.resolve_token({}, environ={}, path=path)
+            config.save_token("  from-file ", path)
+            self.assertEqual(config.resolve_token({}, environ={}, path=path), "from-file")
+            self.assertEqual(config.resolve_token({}, environ={"NOTION_TOKEN": "env"}, path=path), "env")
+            self.assertEqual(config.resolve_token({"api_token_cmd": "echo cmd"}, environ={"NOTION_TOKEN": "env"}, path=path), "cmd")
+
+    def test_token_file_is_owner_only(self):
+        import stat
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "token")
+            config.save_token("x", path)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+            config.save_token("y", path)  # overwrite keeps the mode
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
 
 
 class Delegate(unittest.TestCase):
