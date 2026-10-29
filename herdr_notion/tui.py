@@ -249,6 +249,7 @@ class App:
             bh = min(h - 2, len(items) + 2)
             y0, x0 = (h - bh) // 2, (w - bw) // 2
             win = curses.newwin(bh, bw, y0, x0)
+            win.keypad(True)
             win.box()
             win.addnstr(0, 2, " %s " % title, bw - 4, curses.A_BOLD)
             first = max(0, min(sel - (bh - 3), len(items) - (bh - 2)))
@@ -258,7 +259,7 @@ class App:
                 row = tag + nt.pad(it, bw - 2 - len(tag))
                 win.addstr(1 + r, 1, row, curses.A_REVERSE if i == sel else 0)
             win.refresh()
-            k = self.scr.getch()
+            k = win.getch()  # not self.scr.getch(): that would repaint the background over the popup
             if k in (27, ord("q")):
                 return None
             if k in (curses.KEY_DOWN, ord("j")):
@@ -269,7 +270,6 @@ class App:
                 return sel
             elif ord("1") <= k <= ord("9") and k - ord("1") < len(items):
                 return k - ord("1")
-            self.scr.touchwin()
 
     def ask(self, label, initial="", secret=False):
         """One-line text input; Esc cancels (returns None). `secret` echoes *."""
@@ -472,8 +472,9 @@ class App:
         win.addnstr(0, 2, " Keys ", bw - 4, curses.A_BOLD)
         for i, (r, head) in enumerate(rows[:bh - 2]):
             win.addnstr(1 + i, 2, r, bw - 4, curses.A_BOLD if head else 0)
+        win.keypad(True)
         win.refresh()
-        self.scr.getch()
+        win.getch()
 
     def copy(self, what):
         argv = nt.clipboard_cmd(shutil.which)
