@@ -38,10 +38,12 @@ class App:
 
     # ------------------------------------------------------------ setup
     def load_config(self):
-        self.cfg = cfgmod.load()
-        token = cfgmod.read_token(self.cfg["api_token_cmd"])
-        self.client = nt.Client(token, self.cfg["database_id"], self.cfg["data_source_id"])
-        self.title_prop = self.cfg["title_property"]
+        cfg = cfgmod.load()
+        token = cfgmod.read_token(cfg["api_token_cmd"])
+        self.client = nt.Client(token, cfg["database_id"], cfg["data_source_id"])
+        self.title_prop = cfg["title_property"]
+        self.fidx = 0
+        self.cfg = cfg
 
     def busy(self, text):
         self.scr.erase()
