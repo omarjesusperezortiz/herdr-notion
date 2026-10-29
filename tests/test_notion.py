@@ -141,6 +141,24 @@ class Layout(unittest.TestCase):
         self.assertEqual(nt.group_kind("Something else"), "")
 
 
+class BodyStyle(unittest.TestCase):
+    def test_style_lines_tracks_fences(self):
+        lines = ["## T", "text", "```py", "# not a heading", "```", "[x] a", "[ ] b", "> q", "---"]
+        self.assertEqual(nt.style_lines(lines), [
+            "heading", "plain", "fence", "code", "fence", "done", "todo", "quote", "rule"])
+
+    def test_display_line(self):
+        self.assertEqual(nt.display_line("## Plan", "heading"), "Plan")
+        self.assertEqual(nt.display_line("> wise", "quote"), "▎ wise")
+        self.assertEqual(nt.display_line("  [x] ship", "done"), "  ☑ ship")
+        self.assertEqual(nt.display_line("- item", "plain"), "• item")
+        self.assertEqual(nt.display_line("plain", "plain"), "plain")
+
+    def test_clipboard_cmd(self):
+        self.assertEqual(nt.clipboard_cmd(lambda c: c == "xclip"), ["xclip", "-selection", "clipboard"])
+        self.assertIsNone(nt.clipboard_cmd(lambda c: None))
+
+
 class Prompt(unittest.TestCase):
     PAGE = Properties.PAGE
 

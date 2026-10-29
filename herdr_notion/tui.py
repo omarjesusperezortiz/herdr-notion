@@ -1,6 +1,8 @@
 """curses TUI: list, detail, popups. All network calls are synchronous."""
 import curses
 import os
+import shutil
+import subprocess
 import webbrowser
 
 from . import config as cfgmod
@@ -8,17 +10,13 @@ from . import delegate as dg
 from . import notion as nt
 
 HELP = [
-    "j/k, arrows   move / scroll",
-    "Enter         open page",
-    "f, 1-9        switch filter",
-    "/             search by title",
-    "s             change status",
-    "d             delegate to an agent",
-    "o             open in browser",
-    "r / R         refresh / reload config",
-    "Esc, q        back / quit",
+    ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
+                  ("] / [", "next / previous page (in a page)"),
+                  ("f, 1-9", "switch filter"), ("/", "search by title"), ("Esc, q", "back / quit")]),
+    ("Act", [("s", "change status (asks to confirm)"), ("d", "delegate to an agent"),
+             ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
+    ("Config", [("r", "refresh"), ("R", "reload config")]),
 ]
-
 
 class App:
     def __init__(self, scr):
@@ -202,9 +200,13 @@ class App:
                 row += ("%-9s %s" % (k[:9], v)).ljust(half)[:half]
             lines.append((" " + row, 0))
         lines += [(" " + page.get("url", ""), curses.A_DIM), ("", 0), ("─" * (w - 1), curses.A_DIM)]
-        for l in self.detail["body"].split("\n"):
-            attr = curses.A_BOLD if l.startswith("#") else 0
-            wrapped = [l[i:i + w - 3] for i in range(0, max(len(l), 1), max(w - 3, 1))]
+        body = self.detail["body"].split("\n")
+        for l, kind in zip(body, nt.style_lines(body)):
+            attr = {"heading": curses.A_BOLD | curses.A_UNDERLINE, "rule": curses.A_DIM,
+                    "quote": curses.A_DIM, "fence": curses.A_DIM, "code": self.cp(2),
+                    "done": self.cp(3), "todo": 0}.get(kind, 0)
+            text = nt.display_line(l, kind)
+            wrapped = [text[i:i + w - 3] for i in range(0, max(len(text), 1), max(w - 3, 1))]
             lines += [(" " + x, attr) for x in wrapped]
         view = h - 5
         self.dscroll = max(0, min(self.dscroll, max(0, len(lines) - view)))
@@ -214,15 +216,19 @@ class App:
         if len(lines) > view:
             ind = "%d%%" % min(100, 100 * (self.dscroll + view) // len(lines))
             self.scr.addnstr(h - 1, max(0, w - len(ind) - 2), ind, len(ind), curses.A_DIM)
-        self.footer("s status  d delegate  o browser  ⏎/q back")
+        self.footer("s status  d delegate  o browser  y copy  ] next  q back")
 
     def footer(self, text):
         h, w = self.scr.getmaxyx()
         if self.msg:
             self.scr.addnstr(h - 2, 1, self.msg, w - 2, curses.A_BOLD)
-            self.scr.addnstr(h - 1, 1, text, w - 2, curses.A_DIM)
+            hint_row = h - 1
         else:
-            self.scr.addnstr(h - 2, 1, text, w - 2, curses.A_DIM)
+            hint_row = h - 2
+        self.scr.addnstr(hint_row, 1, text, w - 2, curses.A_DIM)
+        ctx = self.cfg["filters"][self.fidx]["name"] if self.cfg else ""
+        if ctx and len(text) + len(ctx) + 6 < w:
+            self.scr.addnstr(hint_row, w - len(ctx) - 2, ctx, len(ctx), curses.A_DIM | curses.A_BOLD)
 
     # ------------------------------------------------------------ popups
     def popup(self, title, items, start=0):
@@ -302,21 +308,29 @@ class App:
                 self.pages[n] = updated
         if self.detail:
             self.open_page(updated)
-        self.msg = "%s set to %s" % (prop, options[i])
+        self.msg = "%s set to %s · press d to delegate it" % (prop, options[i])
 
-    def delegate(self):
+    def build_prompt(self):
+        """(page, rendered prompt) for the current page, fetching the body if needed."""
         page = self.current()
         if not page:
-            return
-        if not self.detail:
-            self.open_page(page)
-            page = self.detail["page"]
-            self.detail = None
-            body = "\n".join(self.cache[page["id"]])
-        else:
+            return None, None
+        if self.detail:
             body = self.detail["body"]
+        else:
+            self.busy("Loading page…")
+            page = self.client.get_page(page["id"])
+            if page["id"] not in self.cache:
+                self.cache[page["id"]] = self.client.body_lines(page["id"])
+            body = "\n".join(self.cache[page["id"]])
         dcfg = self.cfg["delegate"]
-        prompt = nt.render_prompt(dcfg["prompt"], page, body, dcfg["max_body_chars"])
+        return page, nt.render_prompt(dcfg["prompt"], page, body, dcfg["max_body_chars"])
+
+    def delegate(self):
+        page, prompt = self.build_prompt()
+        if not page:
+            return
+        dcfg = self.cfg["delegate"]
         agents = dg.list_agents()
         items = [dg.agent_label(a) for a in agents] + ["+ start new agent…"]
         i = self.popup("Delegate to", items)
@@ -360,7 +374,44 @@ class App:
             self.refresh()
 
     def help(self):
-        self.popup("Keys", HELP)
+        rows = []
+        for title, items in HELP:
+            rows.append((title, True))
+            rows += [("  %-12s %s" % kv, False) for kv in items]
+            rows.append(("", False))
+        h, w = self.scr.getmaxyx()
+        bw = min(w - 2, max(len(r) for r, _ in rows) + 4)
+        bh = min(h - 2, len(rows) + 2)
+        win = curses.newwin(bh, bw, (h - bh) // 2, (w - bw) // 2)
+        win.box()
+        win.addnstr(0, 2, " Keys ", bw - 4, curses.A_BOLD)
+        for i, (r, head) in enumerate(rows[:bh - 2]):
+            win.addnstr(1 + i, 2, r, bw - 4, curses.A_BOLD if head else 0)
+        win.refresh()
+        self.scr.getch()
+
+    def copy(self, what):
+        argv = nt.clipboard_cmd(shutil.which)
+        if not argv:
+            self.msg = "no clipboard tool found (pbcopy, wl-copy, xclip, xsel)"
+            return
+        if what == "url":
+            page = self.current()
+            text = page["url"] if page else ""
+        else:
+            _, text = self.build_prompt()
+        if text:
+            subprocess.run(argv, input=text.encode(), check=False)
+            self.msg = "copied page URL" if what == "url" else "copied delegate prompt"
+
+    def step(self, delta):
+        """Open the next/previous page of the list from the detail view."""
+        i = self.sel + delta
+        if 0 <= i < len(self.pages):
+            self.sel = i
+            self.open_page(self.pages[i])
+        else:
+            self.msg = "no more pages"
 
     # ------------------------------------------------------------ loop
     def run(self):
@@ -396,6 +447,10 @@ class App:
             if page:
                 webbrowser.open(page["url"])
                 self.msg = "opened in browser"
+        elif k == ord("y"):
+            self.guard(self.copy, "url")
+        elif k == ord("Y"):
+            self.guard(self.copy, "prompt")
         elif k == ord("?"):
             self.help()
 
@@ -437,6 +492,10 @@ class App:
             self.dscroll += h - 3
         elif k == curses.KEY_PPAGE:
             self.dscroll = max(0, self.dscroll - (h - 3))
+        elif k == ord("]"):
+            self.guard(self.step, 1)
+        elif k == ord("["):
+            self.guard(self.step, -1)
         elif k == ord("g"):
             self.dscroll = 0
         elif k == ord("G"):

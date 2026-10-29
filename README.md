@@ -102,11 +102,13 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `s` | change status: pick an option, then confirm with `y` |
 | `d` | delegate: pick a running agent (status, cwd) or **+ start new agent…**, then the prompt is sent |
 | `o` | open the page in the browser |
+| `]` / `[` | next / previous page while reading one |
+| `y` / `Y` | copy the page URL / the delegate prompt (pbcopy, wl-copy, xclip or xsel) |
 | `r` / `R` | refresh / reload config |
 | `?` | help |
 | `Esc`, `q` | back / quit |
 
-The only write to Notion is the status change, after an explicit confirm.
+The plugin never edits Notion on its own: the only write is the status change, after an explicit confirm. The only text sent to an agent is the delegate prompt, when you pick the agent.
 
 ### Delegate
 
@@ -119,7 +121,7 @@ the prompt. If it never becomes ready, nothing is sent.
 ## Tested
 
 - Unit tests (`python3 -m unittest discover -s tests -t .`): block flattening,
-  property rendering, filter/query building, status patch body, prompt
+  body styling, property rendering, filter/query building, status patch body, prompt
   template, config and TOML parsing, delegate command sequences with a fake
   herdr runner.
 - Driven end to end in a pty against mocked Notion responses: list, open,

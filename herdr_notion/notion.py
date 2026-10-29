@@ -218,6 +218,59 @@ def relative_time(iso, now=None):
     return "now"
 
 
+def style_lines(lines):
+    """Classify flattened body lines for display: heading, rule, todo, done,
+    quote, fence, code or plain. Tracks ``` fences across lines."""
+    out, in_code = [], False
+    for l in lines:
+        t = l.lstrip()
+        if t.startswith("```"):
+            in_code = not in_code
+            out.append("fence")
+        elif in_code:
+            out.append("code")
+        elif t.startswith("#"):
+            out.append("heading")
+        elif t == "---":
+            out.append("rule")
+        elif t.startswith("[x]"):
+            out.append("done")
+        elif t.startswith("[ ]"):
+            out.append("todo")
+        elif t.startswith(">"):
+            out.append("quote")
+        else:
+            out.append("plain")
+    return out
+
+
+def display_line(line, kind):
+    """Text to draw for a styled body line (markers swapped for nicer glyphs)."""
+    ind = line[:len(line) - len(line.lstrip())]
+    t = line.lstrip()
+    if kind == "heading":
+        return ind + t.lstrip("#").strip()
+    if kind == "quote":
+        return ind + "▎ " + t[1:].lstrip()
+    if kind == "done":
+        return ind + "☑ " + t[3:].strip()
+    if kind == "todo":
+        return ind + "☐ " + t[3:].strip()
+    if kind == "rule":
+        return ind + "─" * 20
+    if t.startswith("- "):
+        return ind + "• " + t[2:]
+    return line
+
+
+def clipboard_cmd(which):
+    """argv of the first available clipboard tool, or None. `which` is shutil.which."""
+    for argv in (["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-ib"]):
+        if which(argv[0]):
+            return argv
+    return None
+
+
 def status_patch(prop_name, kind, option):
     return {"properties": {prop_name: {kind: {"name": option}}}}
 
