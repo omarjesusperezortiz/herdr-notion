@@ -192,7 +192,7 @@ def status_groups(schema, prop_name):
 
 def group_kind(group_name):
     """Normalize a group name to 'todo' | 'progress' | 'done' | ''."""
-    g = (group_name or "").lower().replace(" ", "_")
+    g = (group_name or "").lower().replace(" ", "_").replace("-", "_")
     if g in ("to_do", "todo"):
         return "todo"
     if g == "in_progress":
