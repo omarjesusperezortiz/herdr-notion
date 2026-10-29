@@ -263,6 +263,26 @@ def display_line(line, kind):
     return line
 
 
+def fit_hints(hints, width):
+    """Join (key, label) hints into one line that fits `width` without cutting a hint.
+
+    Hints are in priority order. Each gets its label while it fits; the rest
+    fall back to the bare key, and are dropped only if even that does not fit.
+    """
+    parts = []
+    used = 0
+    for i, (k, label) in enumerate(hints):
+        full = "%s %s" % (k, label)
+        rest = sum(len(kk) + 2 for kk, _ in hints[i + 1:])  # reserve room for bare keys
+        if used + len(full) + rest <= width:
+            parts.append(full)
+            used += len(full) + 2
+        elif used + len(k) <= width:
+            parts.append(k)
+            used += len(k) + 2
+    return "  ".join(parts)
+
+
 def clipboard_cmd(which):
     """argv of the first available clipboard tool, or None. `which` is shutil.which."""
     for argv in (["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-ib"]):

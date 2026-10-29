@@ -159,6 +159,26 @@ class BodyStyle(unittest.TestCase):
         self.assertIsNone(nt.clipboard_cmd(lambda c: None))
 
 
+class FitHints(unittest.TestCase):
+    H = [("⏎", "open"), ("s", "status"), ("d", "delegate"), ("f", "filters"), ("/", "search"), ("?", "more")]
+
+    def test_wide_shows_everything(self):
+        self.assertEqual(nt.fit_hints(self.H, 80),
+                         "⏎ open  s status  d delegate  f filters  / search  ? more")
+
+    def test_never_cuts_a_hint_and_never_overflows(self):
+        for w in range(12, 80):
+            line = nt.fit_hints(self.H, w)
+            self.assertLessEqual(len(line), w)
+            for part in line.split("  "):
+                self.assertIn(part, [k + " " + l for k, l in self.H] + [k for k, _ in self.H])
+
+    def test_narrow_keeps_every_key(self):
+        line = nt.fit_hints(self.H, 40)
+        for k, _ in self.H:
+            self.assertIn(k, line)
+
+
 class Prompt(unittest.TestCase):
     PAGE = Properties.PAGE
 

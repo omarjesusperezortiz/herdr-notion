@@ -177,7 +177,7 @@ class App:
         if not self.pages:
             self.scr.addnstr(4, 2, "No pages match this filter.", w - 3, curses.A_DIM)
         self.rule(h - 3, w)
-        self.footer("⏎ open  f filters  / search  s status  d delegate  ? more")
+        self.footer([("⏎", "open"), ("s", "status"), ("d", "delegate"), ("f", "filters"), ("/", "search"), ("?", "more")])
 
     def draw_detail(self):
         h, w = self.scr.getmaxyx()
@@ -215,19 +215,24 @@ class App:
         self.rule(h - 3, w)
         if len(lines) > view:
             ind = "%d%%" % min(100, 100 * (self.dscroll + view) // len(lines))
-            self.scr.addnstr(h - 1, max(0, w - len(ind) - 2), ind, len(ind), curses.A_DIM)
-        self.footer("s status  d delegate  o browser  y copy  ] next  q back")
+            self.scr.addnstr(h - 3, max(0, w - len(ind) - 2), ind, len(ind), curses.A_DIM)
+        self.footer([("s", "status"), ("d", "delegate"), ("o", "browser"), ("q", "back"), ("]", "next"), ("y", "copy"), ("?", "more")])
 
-    def footer(self, text):
+    def footer(self, hints):
         h, w = self.scr.getmaxyx()
+        ctx = self.cfg["filters"][self.fidx]["name"] if self.cfg else ""
+        # keep the filter name only when the hints still have room
+        text = nt.fit_hints(hints, w - 2 - (len(ctx) + 3 if ctx else 0))
+        if len(text) < len(nt.fit_hints(hints, w - 2)):
+            ctx = ""
+            text = nt.fit_hints(hints, w - 2)
         if self.msg:
             self.scr.addnstr(h - 2, 1, self.msg, w - 2, curses.A_BOLD)
             hint_row = h - 1
         else:
             hint_row = h - 2
         self.scr.addnstr(hint_row, 1, text, w - 2, curses.A_DIM)
-        ctx = self.cfg["filters"][self.fidx]["name"] if self.cfg else ""
-        if ctx and len(text) + len(ctx) + 6 < w:
+        if ctx:
             self.scr.addnstr(hint_row, w - len(ctx) - 2, ctx, len(ctx), curses.A_DIM | curses.A_BOLD)
 
     # ------------------------------------------------------------ popups
