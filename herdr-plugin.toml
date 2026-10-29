@@ -24,10 +24,10 @@ command = ["python3", "-m", "herdr_notion"]
 id = "open-notion"
 title = "Notion: open (split)"
 description = "Open the Notion TUI in a split pane beside the current work."
-command = ["bash", "scripts/open-notion.sh"]
+command = ["bash", "scripts/open-notion.sh", "split"]
 
 [[actions]]
 id = "open-notion-tab"
 title = "Notion: open (tab)"
 description = "Open the Notion TUI in its own tab."
-command = ["bash", "scripts/open-notion-tab.sh"]
+command = ["bash", "scripts/open-notion.sh", "tab"]
