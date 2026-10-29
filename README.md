@@ -32,8 +32,9 @@ For local development: `herdr plugin link ./herdr-notion`.
 
 ## Set up
 
-Open the pane from the herdr action palette (**Notion: open (split)** or
-**Notion: open (tab)**). On first run it starts a short setup:
+Open it from the herdr action palette (**Notion: open** covers the current pane
+and returns to it on quit; **(split)** and **(tab)** variants also exist), or run
+`herdr plugin action invoke herdr-notion.open-notion`. On first run it starts a short setup:
 
 1. **Create an integration** (once): open <https://www.notion.so/profile/integrations>,
    choose **New integration**, type **Internal**, save, and copy the secret.

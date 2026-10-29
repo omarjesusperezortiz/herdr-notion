@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Launch-or-focus the Notion pane. Usage: open-notion.sh [split|tab]
+# Launch-or-focus the Notion pane. Usage: open-notion.sh [overlay|split|tab]
+# overlay (default) covers the pane you invoked it from and closes on quit.
 #
 # herdr has no "find my pane" call, so the pane id is remembered in the plugin
 # state dir. If focusing it fails (the pane was closed) a new one is opened.
 set -uo pipefail
 
 herdr_bin="${HERDR_BIN_PATH:-herdr}"
-placement="${1:-split}"
+placement="${1:-overlay}"
 state_dir="${HERDR_PLUGIN_STATE_DIR:-${TMPDIR:-/tmp}/herdr-notion}"
 state="$state_dir/pane_id"
 
