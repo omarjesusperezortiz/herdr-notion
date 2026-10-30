@@ -131,9 +131,9 @@ class Databases(unittest.TestCase):
         self.addCleanup(lambda: os.environ.pop("HERDR_PLUGIN_CONFIG_DIR", None))
         os.makedirs(os.path.join(cfg_dir, "databases"))
         with open(os.path.join(cfg_dir, "config.toml"), "w") as f:
-            f.write('# Sprint board\n[notion]\ndata_source_id = "ds"\n')
+            f.write('[notion]\n# Sprint board\ndata_source_id = "ds"\n')
         with open(os.path.join(cfg_dir, "databases", "other.toml"), "w") as f:
-            f.write('# Docs\n[notion]\ndata_source_id = "other"\n')
+            f.write('[notion]\n# Docs\ndata_source_id = "other"\n')
         app, _ = make_app([dict(p) for p in PAGES])
         seen = {}
 
@@ -144,7 +144,7 @@ class Databases(unittest.TestCase):
         app.load_config = lambda: None
         app.refresh_async = lambda label="": seen.setdefault("loading", label)
         app.switch_database()
-        self.assertEqual(seen["items"], ["● Sprint board", "Docs", "+ add another database…"])
+        self.assertEqual(seen["items"], ["● Demo", "Docs", "+ add another database…"])  # the current one by its live name
         self.assertIn('data_source_id = "other"', open(os.path.join(cfg_dir, "config.toml")).read())
         self.assertTrue(os.path.exists(os.path.join(cfg_dir, "databases", "ds.toml")))  # the one we left is remembered
         self.assertIn("Loading", seen["loading"])
