@@ -133,6 +133,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `y` / `Y` | copy the page URL / the delegate prompt (pbcopy, wl-copy, xclip or xsel) |
 | `r` / `R` | refresh / reload config |
 | `T` | change the Notion token |
+| `S` | settings: shows the token source and who it is connected as, the database, status property, columns and filters; `t` token, `p` status property, `b` another database (asks before rewriting `config.toml`) |
 | `?` | help |
 | `Esc`, `q` | back / quit |
 

@@ -1,6 +1,7 @@
 """curses TUI: list, detail, popups. All network calls are synchronous."""
 import curses
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,7 +20,7 @@ HELP = [
                   ("f, 1-9", "switch filter"), ("/", "search by title"), ("Esc, q", "back / quit")]),
     ("Act", [("s", "change status (asks to confirm)"), ("d", "delegate to an agent"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
-    ("Config", [("r", "refresh"), ("R", "reload config"), ("T", "change the Notion token")]),
+    ("Config", [("r", "refresh"), ("R", "reload config"), ("T", "change the Notion token"), ("S", "settings (token, database, status property)")]),
 ]
 
 class App:
@@ -372,6 +373,90 @@ class App:
         dg.send_prompt(pane, prompt)
         self.msg = "started %s and sent prompt" % kinds[j]["name"]
 
+    def settings(self):
+        """Read-only summary of the connection with keys to change each part."""
+        self.busy("Checking the connection…")
+        try:
+            who = nt.Client(cfgmod.resolve_token(self.cfg), "").request("GET", "/users/me").get("name") or "the integration"
+        except (nt.NotionError, cfgmod.ConfigError) as e:
+            who = "NOT CONNECTED (%s)" % e
+        over = cfgmod.token_override(self.cfg)
+        source = over or ("token file" if os.path.exists(cfgmod.token_path()) else "none")
+        while True:
+            lines = ["Settings", "",
+                     "Token: %s · connected as %s" % (source, who),
+                     "Database: %s" % self.source_title(),
+                     "Status property: %s" % (self.cfg["status_property"] or "(none)"),
+                     "Columns: %s" % ", ".join(self.cfg["columns"]),
+                     "Filters: %s" % ", ".join(f["name"] for f in self.cfg["filters"]),
+                     "Config file: %s" % cfgmod.config_path(), "",
+                     "t: change the token   p: change the status property",
+                     "b: pick another database   Esc: back"]
+            if over:
+                lines.insert(3, "  (%s wins over the token file; change it there)" % over)
+            k = self.show(lines)
+            if k in (27, ord("q")):
+                return
+            if k == ord("t"):
+                self.guard(self.change_token)
+                return
+            if k == ord("p"):
+                self.guard(self.change_status_property)
+                return
+            if k == ord("b"):
+                self.guard(self.change_database)
+                return
+
+    def source_title(self):
+        try:
+            t = "".join(x.get("plain_text", "") for x in (self.client.discover().get("title") or []))
+        except nt.NotionError:
+            t = ""
+        return t or "(unnamed)"
+
+    def write_config_value(self, key, value):
+        """Replace `key = ...` inside config.toml, keeping everything else (filters, prompt) as it is."""
+        path = cfgmod.config_path()
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        line = "%s = %s" % (key, st.toml_value(value))
+        if re.search(r"(?m)^%s\s*=.*$" % re.escape(key), text):
+            text = re.sub(r"(?m)^%s\s*=.*$" % re.escape(key), lambda m: line, text, count=1)
+        else:
+            text = text.replace("[notion]\n", "[notion]\n" + line + "\n", 1)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def change_status_property(self):
+        schema = self.client.discover()
+        options = st.status_candidates(schema)
+        if not options:
+            self.msg = "no status or select property in this database"
+            return
+        j = self.popup("Which property is the status?", [st.property_label(schema, o) for o in options])
+        if j is None:
+            return
+        self.write_config_value("status_property", options[j])
+        self.load_config()
+        self.refresh()
+        self.msg = "status property is now %s" % options[j]
+
+    def change_database(self):
+        token = cfgmod.resolve_token(self.cfg)
+        client = nt.Client(token, "")
+        me = client.request("GET", "/users/me")
+        picked = self.pick_database(client, me.get("name") or "the integration")
+        if not picked:
+            return
+        choice, schema, status_prop = picked
+        if not self.confirm("Replace config.toml for '%s'? Your filters and prompt are regenerated. [y/N]" % choice["title"]):
+            return
+        with open(cfgmod.config_path(), "w", encoding="utf-8") as f:
+            f.write(st.render_config(choice, schema, status_prop))
+        self.load_config()
+        self.refresh()
+        self.msg = "now browsing %s" % choice["title"]
+
     def change_token(self):
         """Replace the saved token. The new one is checked against Notion before it is written."""
         token = self.ask("new secret: ", secret=True)
@@ -415,6 +500,43 @@ class App:
         self.scr.refresh()
         return self.scr.getch() if key else None
 
+    def pick_database(self, client, name):
+        """Ask which database to browse and which property is its status.
+        Returns (choice, schema, status_prop) or None when cancelled or failed."""
+        try:
+            while True:
+                choices = st.database_choices(client.request("POST", "/search", st.SEARCH_BODY))
+                if choices:
+                    break
+                k = self.show(["Connected as %s" % name, "",
+                               "No database is shared with it yet. In Notion:",
+                               "  open your database, click ••• (top right) → Connections,",
+                               "  and add %s." % name, "",
+                               "Press r to check again, q to quit."])
+                if k in (ord("q"), 27):
+                    return None
+            self.show(["Connected as %s" % name, "", "Pick the database to browse."], key=False)
+            i = self.popup("Database", [c["title"] for c in choices])
+            if i is None:
+                return None
+            choice = choices[i]
+            schema = client.request("GET", "/data_sources/" + choice["id"])
+            status_prop = ""
+            options = st.status_candidates(schema)
+            if len(options) == 1:
+                status_prop = options[0]
+            elif options:
+                j = self.popup("Which property is the status?", [st.property_label(schema, o) for o in options])
+                if j is None:
+                    return None
+                status_prop = options[j]
+            elif not self.confirm("No status property found; s will be disabled. Continue?"):
+                return None
+        except nt.NotionError as e:
+            self.show(["Setup failed", "", str(e), "", "Press any key."])
+            return None
+        return choice, schema, status_prop
+
     def wizard(self):
         """Connect a token and pick a database. Writes config.toml and the token
         file. Returns True when the config is ready."""
@@ -437,38 +559,10 @@ class App:
             except nt.NotionError as e:
                 self.msg = str(e)
         name = me.get("name") or "your integration"
-        try:
-            while True:
-                choices = st.database_choices(client.request("POST", "/search", st.SEARCH_BODY))
-                if choices:
-                    break
-                k = self.show(["Connected as %s" % name, "",
-                               "No database is shared with it yet. In Notion:",
-                               "  open your database, click ••• (top right) → Connections,",
-                               "  and add %s." % name, "",
-                               "Press r to check again, q to quit."])
-                if k in (ord("q"), 27):
-                    return False
-            self.show(["Connected as %s" % name, "", "Pick the database to browse."], key=False)
-            i = self.popup("Database", [c["title"] for c in choices])
-            if i is None:
-                return False
-            choice = choices[i]
-            schema = client.request("GET", "/data_sources/" + choice["id"])
-            status_prop = ""
-            options = st.status_candidates(schema)
-            if len(options) == 1:
-                status_prop = options[0]
-            elif options:
-                j = self.popup("Which property is the status?", [st.property_label(schema, o) for o in options])
-                if j is None:
-                    return False
-                status_prop = options[j]
-            elif not self.confirm("No status property found; s will be disabled. Continue?"):
-                return False
-        except nt.NotionError as e:
-            self.show(["Setup failed", "", str(e), "", "Press any key."])
+        picked = self.pick_database(client, name)
+        if not picked:
             return False
+        choice, schema, status_prop = picked
         os.makedirs(os.path.dirname(cfgmod.config_path()), exist_ok=True)
         with open(cfgmod.config_path(), "w", encoding="utf-8") as f:
             f.write(st.render_config(choice, schema, status_prop))
@@ -563,6 +657,8 @@ class App:
             self.help()
         elif k == ord("T"):
             self.guard(self.change_token)
+        elif k == ord("S"):
+            self.guard(self.settings)
 
     def list_key(self, k):
         self.msg = "" if k != -1 else self.msg
