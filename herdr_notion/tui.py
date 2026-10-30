@@ -428,17 +428,24 @@ class App:
         finally:
             curses.curs_set(0)
 
-    def ask_paste(self, label):
+    def ask_paste(self, label, at=None):
         """Input for a pasted address: a paste that wraps over several lines is read as one piece
-        (line breaks are dropped), and it is submitted once nothing more arrives. Esc cancels."""
+        (line breaks are dropped), and it is submitted once nothing more arrives. Esc cancels.
+        `at` = (row, col, width) types inside a box already on the screen; otherwise on the last line."""
         buf, pending = "", False
         curses.curs_set(1)
         try:
             while True:
                 h, w = self.scr.getmaxyx()
-                shown = buf[-(w - len(label) - 2):] if len(buf) > w - len(label) - 2 else buf
-                self.scr.addnstr(h - 1, 0, (label + shown).ljust(w - 1), w - 1)
-                self.scr.move(h - 1, min(len(label) + len(shown), w - 1))
+                if at:
+                    row, col, width = at
+                    shown = buf[-(width - 1):] if len(buf) > width - 1 else buf
+                    self.scr.addnstr(row, col, shown.ljust(width), width)
+                    self.scr.move(row, min(col + len(shown), col + width - 1))
+                else:
+                    shown = buf[-(w - len(label) - 2):] if len(buf) > w - len(label) - 2 else buf
+                    self.scr.addnstr(h - 1, 0, (label + shown).ljust(w - 1), w - 1)
+                    self.scr.move(h - 1, min(len(label) + len(shown), w - 1))
                 self.scr.timeout(300 if pending else -1)
                 try:
                     k = self.scr.get_wch()
@@ -832,10 +839,60 @@ class App:
         if argv:
             subprocess.run(argv, input=text.encode(), check=False)
 
+    def draw_signin(self, flow, note, boxed):
+        """The sign-in screen. Returns (row, col, width) of the paste box."""
+        h, w = self.scr.getmaxyx()
+        self.scr.erase()
+        x = 2
+        inner = max(w - 8, 10)
+        url = [flow.url[i:i + inner] for i in range(0, len(flow.url), inner)]
+        roomy = h >= len(url) + 20
+        y = 1
+        self.scr.addnstr(y, x, "Sign in to Notion", w - 3, curses.A_BOLD)
+        self.scr.addnstr(y + 1, x, "─" * min(w - 4, 64), w - 3, curses.A_DIM)
+        y += 3
+        self.scr.addnstr(y, x, "1  Open this link in your browser", w - 3, curses.A_BOLD)
+        y += 1
+        link_rows = []
+        for piece in url:
+            self.scr.addnstr(y, x + 3, piece, w - 6, self.cp(2))
+            link_rows.append((y, x + 3, piece))
+            y += 1
+        self.scr.addnstr(y, x + 3, "Cmd/Ctrl+click it · o opens it here · c copies it", w - 6, curses.A_DIM)
+        y += 2
+        if roomy:
+            self.scr.addnstr(y, x, "2  Choose a workspace and approve", w - 3, curses.A_BOLD)
+            y += 2
+        self.scr.addnstr(y, x, "3  Finish", w - 3, curses.A_BOLD)
+        y += 1
+        for line in ("Browser on this machine: nothing to do, this screen carries on by itself.",
+                     "Browser on another machine: it ends on a page that will not load.",
+                     "Copy that page's address and paste it in the box (press p first):"):
+            self.scr.addnstr(y, x + 3, line, w - 6, curses.A_DIM if "another" not in line else 0)
+            y += 1
+        y += 1
+        bw = max(min(w - 8, 90), 20)
+        attr = curses.A_BOLD if boxed else 0
+        self.scr.addnstr(y, x + 3, "╭" + "─" * (bw - 2) + "╮", bw, attr)
+        self.scr.addnstr(y + 1, x + 3, "│", 1, attr)
+        self.scr.addnstr(y + 1, x + 3 + bw - 1, "│", 1, attr)
+        if not boxed:
+            self.scr.addnstr(y + 1, x + 5, "press p, then paste the address here", bw - 4, curses.A_DIM)
+        self.scr.addnstr(y + 2, x + 3, "╰" + "─" * (bw - 2) + "╯", bw, attr)
+        box = (y + 1, x + 5, bw - 4)
+        y += 4
+        if note and y < h - 1:
+            self.scr.addnstr(y, x + 3, note, w - 6, curses.A_BOLD)
+        self.scr.addnstr(h - 1, 0, " p paste address   o open link   c copy link   Esc cancel".ljust(w - 1), w - 1, curses.A_REVERSE)
+        self.scr.refresh()
+        for ly, lx, text in link_rows:  # every piece of the long link is clickable and points at the whole link
+            self.link(ly, lx, text, flow.url)
+        return box
+
     def sign_in(self):
         """Sign in with the browser, inside the pane. The page to open is Notion's own sign-in page, so it works
         from any machine. When the browser runs on this machine the pane carries on by itself; otherwise the
-        browser ends on a page that will not load, and p takes that page's address."""
+        browser ends on a page that will not load, and the box takes that page's address."""
         flow = oauth.Flow()
         try:
             webbrowser.open(flow.url)
@@ -850,29 +907,7 @@ class App:
                 res = flow.poll()
                 if res:
                     break
-                h, w = self.scr.getmaxyx()
-                self.scr.erase()
-                width = max(w - 6, 10)
-                label = "Sign in with Notion  ↗"
-                rows = [("Sign in to Notion", curses.A_BOLD), ("─" * min(w - 4, 60), curses.A_DIM), ("", 0),
-                        ("1  Open Notion's sign-in page (Cmd/Ctrl+click it, or press o):", 0), ("", 0),
-                        ("      " + label, curses.A_BOLD | curses.A_UNDERLINE), ("", 0),
-                        ("   or copy the address (press c) and paste it in any browser:", curses.A_DIM)]
-                rows += [("   " + flow.url[i:i + width], curses.A_DIM) for i in range(0, len(flow.url), width)]
-                rows += [("", 0), ("2  Choose a workspace and approve the connection.", 0),
-                         ("3  Browser on this machine: this screen carries on by itself.", 0),
-                         ("   Browser on another machine: it ends on a page that will not load.", 0),
-                         ("   Copy that page's address, press p here, and paste it.", 0), ("", 0),
-                         (note, curses.A_BOLD if note else 0)]
-                link_at = None
-                for y, (line, attr) in enumerate(rows[:h - 2]):
-                    self.scr.addnstr(1 + y, 2, line, w - 3, attr)
-                    if line.strip() == label:
-                        link_at = (1 + y, 8)
-                self.scr.addnstr(h - 1, 0, " o open   c copy link   p paste address   Esc cancel".ljust(w - 1), w - 1, curses.A_REVERSE)
-                self.scr.refresh()
-                if link_at:
-                    self.link(link_at[0], link_at[1], label, flow.url)
+                box = self.draw_signin(flow, note, False)
                 k = self.scr.getch()
                 if k == 27:
                     flow.close()
@@ -885,7 +920,8 @@ class App:
                     self.copy_to_clipboard(flow.url)
                     note = "link copied: paste it in your browser's address bar"
                 elif k == ord("p"):
-                    pasted = self.ask_paste("address: ")
+                    box = self.draw_signin(flow, "", True)
+                    pasted = self.ask_paste("", at=box)
                     self.scr.timeout(300)
                     if pasted:
                         got = flow.parse(pasted)
@@ -1045,9 +1081,11 @@ class App:
         self.scr.refresh()
 
     def splash(self, minimum=1.7):
-        """Show the splash while the first page loads (a key skips the wait once it has loaded)."""
+        """Show the splash for at least `minimum` seconds and while the first page loads. It cannot be skipped:
+        resize events and stray input (a pane gets both right after it starts) must not cut the animation short."""
         if self.scr.getmaxyx()[0] < 5:
             return
+        curses.flushinp()
         start = time.time()
         while True:
             self.poll_job()
@@ -1056,10 +1094,8 @@ class App:
             if (not self.job and t >= minimum) or self.reconnect:
                 return
             self.scr.timeout(60)
-            k = self.scr.getch()
+            self.scr.getch()  # only paces the loop; whatever arrives is ignored
             self.scr.timeout(-1)
-            if k != -1 and not self.job:
-                return
 
     def first_run(self):
         """First start: sign in, pick the database, see the tabs. Returns True when config.toml is ready."""
