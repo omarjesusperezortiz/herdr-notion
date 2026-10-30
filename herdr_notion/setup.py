@@ -107,7 +107,14 @@ def sprint_filter(schema):
     return None
 
 
-def suggest_filters(schema, status_prop):
+def assignee_relation(schema):
+    """The relation property that says who a page belongs to (Assignee, Owner…), when there is one."""
+    props = [(n, p) for n, p in (schema.get("properties") or {}).items() if p.get("type") == "relation"
+             and any(w in n.lower() for w in PERSON_WORDS)]
+    return props[0][0] if props else ""
+
+
+def suggest_filters(schema, status_prop, views=None, me_page=None):
     """Tabs worth having, first one is what opens: Mine, Current sprint, Open, All. Only what this database supports."""
     open_ = open_filter(schema, status_prop) if status_prop else None
 
@@ -117,16 +124,23 @@ def suggest_filters(schema, status_prop):
 
     out = []
     who = person_property(schema)
-    if who:
-        out.append({"name": "Mine", "filter": and_({"property": who, "people": {"contains": "me"}}, open_)})
+    mine = None
+    if me_page:  # same field as the boards in Notion: the Assignee relation to the person's own page
+        mine = {"property": me_page[0], "relation": {"contains": me_page[1]}}
+    elif who:
+        mine = {"property": who, "people": {"contains": "me"}}
+    if mine:
+        out.append({"name": "Mine", "filter": and_(mine, open_)})
     sprint = sprint_filter(schema)
     if sprint:
         out.append({"name": "Current sprint", "filter": and_(sprint, open_)})
-        if who:
-            out.append({"name": "Mine · sprint", "filter": and_({"property": who, "people": {"contains": "me"}}, sprint, open_)})
+        if mine:
+            out.append({"name": "Mine · sprint", "filter": and_(mine, sprint, open_)})
     if open_:
         out.append({"name": "Open", "filter": open_})
     out.append({"name": "All"})
+    for v in (views or [])[:6]:  # the saved views of the database, as Notion shows them
+        out.append({"name": "▦ " + v["name"], "view": v["url"]})
     return out
 
 
@@ -134,6 +148,8 @@ def render_filters(filters):
     lines = []
     for f in filters:
         lines += ["[[filters]]", "name = %s" % toml_value(f["name"])]
+        if f.get("view"):
+            lines.append("view = %s" % toml_value(f["view"]))
         if f.get("filter"):
             lines.append("filter = %s" % toml_value(f["filter"]))
         lines.append("")
@@ -161,7 +177,7 @@ def toml_value(v):
     raise TypeError(type(v))
 
 
-def render_config(choice, schema, status_prop):
+def render_config(choice, schema, status_prop, filters=None):
     """config.toml text for the picked data source."""
     cols = ([status_prop] if status_prop else []) + column_candidates(schema, status_prop)
     lines = [
@@ -176,4 +192,4 @@ def render_config(choice, schema, status_prop):
         "columns = %s" % toml_value(cols),
         "",
     ]
-    return "\n".join(lines) + "\n" + render_filters(suggest_filters(schema, status_prop))
+    return "\n".join(lines) + "\n" + render_filters(filters or suggest_filters(schema, status_prop))

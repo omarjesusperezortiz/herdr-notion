@@ -59,6 +59,8 @@ def schema_from_state(state):
                 if names:
                     groups.append({"name": GROUP_NAMES.get(key, key), "option_ids": names})
             props[name] = {"type": "status", "status": {"options": opts, "groups": groups}}
+        elif t == "relation":
+            props[name] = {"type": t, t: {"data_source": collection_id(p.get("dataSourceUrl", ""))}}
         else:
             props[name] = {"type": t, t: {}}
     return {"title": [{"plain_text": state.get("name", "")}], "properties": props, "url": state.get("url", "")}
@@ -134,6 +136,9 @@ def to_mcp_filter(f, schema):
     if cond == "people":
         value = {"type": "relative", "value": "me"} if val == "me" else _exact("user://%s" % val)
         return dict(base, propertyType="person", operator={"contains": "person_contains", "does_not_contain": "person_does_not_contain"}[op], value=value)
+    if cond == "relation":
+        return dict(base, propertyType="relation", operator={"contains": "relation_contains", "does_not_contain": "relation_does_not_contain"}[op],
+                    value=_exact(val))
     if cond == "checkbox":
         return dict(base, propertyType="checkbox", operator="checkbox_is", value={"type": "exact", "value": bool(val)})
     if cond == "formula":  # {"formula": {"checkbox": {"equals": true}}}
@@ -259,6 +264,78 @@ class McpClient:
             for u, title in pool.map(one, todo):
                 self._titles[u] = title
 
+    def database_url(self):
+        """URL of the database that owns this data source (read from the ancestors of any one page)."""
+        if getattr(self, "_db_url", ""):
+            return self._db_url
+        rows = self.call("notion-query-data-sources", {"data": {"mode": "rows", "data_source_url": "collection://" + self.data_source_id, "limit": 1}})
+        rows = rows.get("results", []) if isinstance(rows, dict) else []
+        if not rows:
+            raise nt.NotionError("the database has no pages to read its views from")
+        text = self._fetch_page(rows[0]["url"])
+        m = re.search(r'<ancestor-2-database url="([^"]+)"', text) or re.search(r'<parent-database url="([^"]+)"', text)
+        if not m:
+            raise nt.NotionError("could not find the database of this data source")
+        self._db_url = m.group(1)
+        return self._db_url
+
+    def views(self):
+        """[{name, type, url}] for the saved views of the database; `url` can be given to a view query."""
+        if getattr(self, "_views", None) is not None:
+            return self._views
+        dburl = self.database_url()
+        res = self.call("notion-fetch", {"id": dburl})
+        text = res.get("text", "") if isinstance(res, dict) else str(res)
+        dbid = re.sub(r"\W", "", dburl.split("?")[0].rstrip("/").split("/")[-1].split("-")[-1]) if "/p/" not in dburl else re.sub(r"\W", "", dburl.split("/p/")[-1].split("?")[0])
+        out = []
+        for vurl, js in re.findall(r'<view url="\{\{(view://[^}]+)\}\}">\s*(\{.*?\})\s*</view>', text, re.S):
+            try:
+                d = json.loads(js)
+            except ValueError:
+                continue
+            out.append({"name": d.get("name") or "View", "type": d.get("type", ""),
+                        "url": "https://www.notion.so/%s?v=%s" % (dbid, vurl.split("view://")[1].replace("-", ""))})
+        self._views = out
+        return out
+
+    def query_view(self, body, cursor=None):
+        """One page of a saved view, in the order and with the filters the view has in Notion (real cursor paging)."""
+        schema = self.discover()
+        data = {"mode": "view", "view_url": body["view_url"], "page_size": max(1, min(int(body.get("page_size", 50)), 100))}
+        if cursor:
+            data["start_cursor"] = cursor
+        res = self.call("notion-query-data-sources", {"data": data})
+        rows = res.get("results", []) if isinstance(res, dict) else []
+        self.resolve_users(person_ids(rows, schema))
+        self.resolve_titles(self.relation_urls(rows, schema))
+        more = bool(isinstance(res, dict) and res.get("has_more") and res.get("next_cursor"))
+        return {"results": [to_page(r, schema, self._users, self._titles) for r in rows], "has_more": more,
+                "cursor": res.get("next_cursor") if more else None, "note": ""}
+
+    def find_person_page(self, prop, name):
+        """URL of the page in the relation's target database titled like `name` (the signed-in person), or ''."""
+        schema = self.discover()
+        target = (schema["properties"].get(prop, {}).get("relation") or {}).get("data_source", "")
+        if not target or not name:
+            return ""
+        tokens = lambda t: set(self.fold_name(t).replace("-", " ").split())
+        mine, best = tokens(name), ("", 0)
+        for query in (name, name.split()[0]):
+            res = self.call("notion-search", {"query": query, "data_source_url": "collection://" + target, "page_size": 10, "max_highlight_length": 0})
+            for r in res.get("results", []) if isinstance(res, dict) else []:
+                theirs = tokens(r.get("title", ""))
+                # the person's page is titled with their name, maybe a shorter form of it ("Omar Perez" for "Omar Perez Ortiz")
+                if r.get("type") == "page" and len(theirs) >= 2 and theirs <= mine and len(theirs) > best[1]:
+                    best = (r.get("url", "").split("?")[0], len(theirs))
+            if best[0]:
+                break
+        return best[0]
+
+    @staticmethod
+    def fold_name(t):
+        import unicodedata
+        return "".join(c for c in unicodedata.normalize("NFD", (t or "").lower().strip()) if unicodedata.category(c) != "Mn")
+
     def paging_key(self, schema):
         """Property that orders pages for paging: last edited, else created."""
         for kind in ("last_edited_time", "created_time"):
@@ -273,6 +350,8 @@ class McpClient:
         caller de-duplicates through `seen`). When a single day holds more rows than one page, the other end of
         that day is read in ascending order and then the walk moves on to earlier days; `note` is set when rows of
         such a day may be missing. `cursor` is opaque: pass back what the previous call returned."""
+        if body.get("view_url"):
+            return self.query_view(body, cursor)
         schema = self.discover()
         key, kind = self.paging_key(schema)
         user_sorted = bool(body.get("sorts"))

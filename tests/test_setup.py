@@ -138,3 +138,20 @@ class Columns(unittest.TestCase):
                                  "Completed At": {"type": "date", "date": {}}, "Assignee Notion user": {"type": "people", "people": {}},
                                  "Assignee": {"type": "relation", "relation": {}}, "Priority": {"type": "select", "select": {"options": []}}}}
         self.assertEqual(setup.column_candidates(schema, "Status"), ["Assignee", "Priority"])
+
+
+class MineAndViews(unittest.TestCase):
+    def test_mine_uses_the_assignee_relation_when_the_persons_page_is_known(self):
+        schema = {"properties": {"Name": {"type": "title", "title": {}}, "Status": {"type": "status", "status": {"options": [], "groups": []}},
+                                 "Assignee": {"type": "relation", "relation": {"data_source": "x"}},
+                                 "Notion user": {"type": "people", "people": {}}}}
+        flt = setup.suggest_filters(schema, "Status", [], ("Assignee", "https://x/p/me"))
+        self.assertEqual(flt[0]["name"], "Mine")
+        self.assertEqual(flt[0]["filter"], {"property": "Assignee", "relation": {"contains": "https://x/p/me"}})
+
+    def test_views_become_tabs_after_the_filters(self):
+        flt = setup.suggest_filters({"properties": {}}, "", [{"name": "Board", "url": "https://x?v=1"}, {"name": "Done", "url": "https://x?v=2"}])
+        self.assertEqual([f["name"] for f in flt], ["All", "▦ Board", "▦ Done"])
+        text = setup.render_filters(flt)
+        cfg = config.normalize(tomlcompat.loads('[notion]\ndata_source_id = "d"\n\n' + text))
+        self.assertEqual(cfg["filters"][1]["view"], "https://x?v=1")

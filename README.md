@@ -47,9 +47,9 @@ there does nothing. Variants: `open-notion-split`, `open-notion-overlay`,
 2. **Pick the database** by typing part of its name (or pasting its Notion link),
    then its status property.
 
-That writes `config.toml` with filter tabs your database supports: **Mine**
-(pages assigned to you that are not finished, opened first), **Current sprint**
-when there is a checkbox or formula named like it, **Open**, and **All**. Press
+That writes `config.toml` with tabs your database supports: **Mine** (pages assigned to you that are not
+finished, opened first, through the same Assignee link your Notion boards use when your person page is found), **Current sprint**
+when there is a checkbox or formula named like it, **Open**, **All**, and one tab per saved Notion view (`▦ Board`, …). Press
 `S` for the connection screen: it shows who is signed in and lets you sign in
 again, pick another database, change the status property, reset the filter tabs
 or sign out. A connection problem opens that screen by itself.
@@ -111,7 +111,11 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `j`/`k`, arrows | move / scroll |
 | `Enter` | open page (properties + body as plain text) |
 | `f`, `1`-`9` | switch filter |
-| `/` | search by title |
+| `/` | type to narrow the loaded pages at once; Enter also searches the whole database (a view only narrows) |
+| Esc | clears the search and the status filter; quits when nothing is left to clear |
+| `F` | show one status only (among the loaded pages) |
+| `V` | open one of the database's Notion views as a tab: its filters, its order, real paging |
+| `J` / `K`, Space, `b` | scroll the preview pane / page through the list |
 | `O` / `g` | sort (newest edit, title, status) / group the rows by status |
 | `s` | change status: pick an option, then confirm with `y` |
 | `d` | delegate: pick a running agent (status, cwd) or **+ start new agent…**, then the prompt is sent |

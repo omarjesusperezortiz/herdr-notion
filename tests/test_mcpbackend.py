@@ -213,3 +213,42 @@ class Paging(unittest.TestCase):
         cl = self.make({"2026-10-30": 3})
         r = cl.query({"sorts": [{"property": "Name", "direction": "ascending"}]})
         self.assertFalse(r["has_more"])
+
+
+class ViewsAndMine(unittest.TestCase):
+    STATE = {"name": "D", "schema": {"Name": {"name": "Name", "type": "title"},
+                                     "Assignee": {"name": "Assignee", "type": "relation", "dataSourceUrl": "collection://aaaaaaaa-0000-0000-0000-000000000000"}}}
+
+    def test_relation_filter_and_target_are_kept(self):
+        schema = mb.schema_from_state(self.STATE)
+        self.assertEqual(schema["properties"]["Assignee"]["relation"]["data_source"], "aaaaaaaa-0000-0000-0000-000000000000")
+        f = mb.to_mcp_filter({"property": "Assignee", "relation": {"contains": "https://x/p/me"}}, schema)
+        self.assertEqual((f["propertyType"], f["operator"], f["value"]), ("relation", "relation_contains", {"type": "exact", "value": "https://x/p/me"}))
+
+    def test_the_persons_page_is_found_by_a_shorter_form_of_their_name(self):
+        class Fake:
+            def call(self, name, args=None):
+                return {"results": [{"type": "page", "title": "Grace Hopper", "url": "https://x/p/other"},
+                                    {"type": "page", "title": "Omar Perez", "url": "https://x/p/me?pvs=4"},
+                                    {"type": "database", "title": "Omar Perez Ortiz", "url": "https://x/db"}]}
+        cl = mb.McpClient("ds", Fake())
+        cl._schema = mb.schema_from_state(self.STATE)
+        self.assertEqual(cl.find_person_page("Assignee", "Omar Pérez Ortiz"), "https://x/p/me")
+        self.assertEqual(cl.find_person_page("Assignee", "Someone Else"), "")
+
+    def test_a_view_query_pages_with_a_real_cursor(self):
+        calls = []
+
+        class Fake:
+            def call(self, name, args=None):
+                calls.append(args["data"])
+                more = "start_cursor" not in args["data"]
+                return {"results": [{"Name": "A" if more else "B", "url": "u/%s" % more}], "has_more": more, "next_cursor": "c2" if more else None}
+        cl = mb.McpClient("ds", Fake())
+        cl._schema = mb.schema_from_state(self.STATE)
+        first = cl.query({"view_url": "https://x/db?v=1", "page_size": 10})
+        self.assertTrue(first["has_more"])
+        self.assertEqual(first["cursor"], "c2")
+        second = cl.query({"view_url": "https://x/db?v=1", "page_size": 10}, cursor=first["cursor"])
+        self.assertFalse(second["has_more"])
+        self.assertEqual((calls[0]["mode"], calls[1]["start_cursor"]), ("view", "c2"))

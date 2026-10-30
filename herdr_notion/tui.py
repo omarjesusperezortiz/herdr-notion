@@ -22,8 +22,8 @@ from . import setup as st
 HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
-                  ("f, 1-9", "switch filter"), ("/", "search by title"), ("Esc, q", "back / quit")]),
-    ("Act", [("s", "change status (asks to confirm)"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"),
+                  ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
+    ("Act", [("s", "change status (asks to confirm)"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("F", "show one status only"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -50,7 +50,11 @@ class App:
         self.next_agent_poll = 0
         self.fidx = 0
         self.query = ""
-        self.pages = []
+        self.all = []  # every page loaded for this tab, in the chosen order
+        self.pages = []  # what is shown: `all` narrowed by the type-ahead text and the status filter
+        self.live = ""  # type-ahead text (filters the loaded pages as you type)
+        self.status_filter = ""  # show only this status
+        self.pscroll = 0  # scroll offset of the preview pane
         self.has_more = False
         self.cursor = None
         self.query_body = {}
@@ -144,12 +148,15 @@ class App:
         if not self.title_prop:
             self.title_prop = nt.title_property_name(schema.get("properties", {}))
         flt = self.cfg["filters"][self.fidx]
+        if flt.get("view"):  # a saved Notion view: its own filters and order, with real paging
+            return {"view_url": flt["view"], "page_size": self.cfg["page_size"]}
         return nt.build_query(flt, self.query, self.title_prop, "me", self.cfg["page_size"])
 
     def apply_list(self, schema, body, res):
         self.groups = nt.status_groups(schema, self.cfg["status_property"])
         self.query_body = body
-        self.pages = res.get("results", [])
+        self.all = res.get("results", [])
+        self.live = ""
         self.has_more, self.cursor = bool(res.get("has_more")), res.get("cursor")
         self.sel = self.top = 0
         self.msg = ""
@@ -182,8 +189,8 @@ class App:
         seen = {p["id"] for p in self.pages}
 
         def done(res):
-            have = {p["id"] for p in self.pages}
-            self.pages += [p for p in res.get("results", []) if p["id"] not in have]
+            have = {p["id"] for p in self.all}
+            self.all += [p for p in res.get("results", []) if p["id"] not in have]
             self.has_more, self.cursor = bool(res.get("has_more")), res.get("cursor")
             self.msg = res.get("note", "")
             self.apply_sort()
@@ -223,23 +230,54 @@ class App:
         text = nt.prop_text(page["properties"].get(self.cfg["status_property"]))
         return nt.group_kind(self.groups.get(text, "")) or nt.guess_kind(text)
 
+    @staticmethod
+    def fold(text):
+        """Lower-case without accents, so 'revisión' matches 'revision'."""
+        import unicodedata
+        return "".join(c for c in unicodedata.normalize("NFD", text.lower()) if unicodedata.category(c) != "Mn")
+
+    def matches(self, page):
+        if self.live and self.fold(self.live) not in self.fold(nt.page_title(page)):
+            return False
+        if self.status_filter and nt.prop_text(page["properties"].get(self.cfg["status_property"])) != self.status_filter:
+            return False
+        return True
+
+    def refilter(self):
+        """Recompute the shown pages from `all`, keeping the selection on the same page when it is still shown."""
+        sid = self.pages[self.sel]["id"] if self.pages and self.sel < len(self.pages) else None
+        self.pages = [p for p in self.all if self.matches(p)]
+        self.sel = next((i for i, p in enumerate(self.pages) if p["id"] == sid), 0) if sid else 0
+        self.top = min(self.top, max(0, len(self.pages) - 1))
+
+    def replace_page(self, updated):
+        for n, p in enumerate(self.all):
+            if p["id"] == updated["id"]:
+                self.all[n] = updated
+        self.refilter()
+
+    def on_view_tab(self):
+        return bool(self.cfg and self.cfg["filters"][self.fidx].get("view"))
+
     def apply_sort(self):
         """Order the loaded pages (and group them by status) while keeping the selection on the same page."""
-        if not self.pages:
-            return
-        sid = self.pages[self.sel]["id"] if self.sel < len(self.pages) else None
+        sid = self.pages[self.sel]["id"] if self.pages and self.sel < len(self.pages) else None
         mode = self.SORTS[self.sort_mode][0]
         stext = lambda p: nt.prop_text(p["properties"].get(self.cfg["status_property"])).lower()
+        if self.on_view_tab() and not self.sort_mode and not self.group:  # keep the order the view has in Notion
+            self.pages = [p for p in self.all if self.matches(p)]
+            self.sel = next((i for i, p in enumerate(self.pages) if p["id"] == sid), 0) if sid else 0
+            return
         if mode == "title":
-            self.pages.sort(key=lambda p: nt.page_title(p).lower())
+            self.all.sort(key=lambda p: nt.page_title(p).lower())
         elif mode == "status":
-            self.pages.sort(key=lambda p: (self.KIND_RANK[self.status_kind(p)], stext(p)))
+            self.all.sort(key=lambda p: (self.KIND_RANK[self.status_kind(p)], stext(p)))
         else:
-            self.pages.sort(key=lambda p: p.get("last_edited_time") or "", reverse=True)
+            self.all.sort(key=lambda p: p.get("last_edited_time") or "", reverse=True)
         if self.group:  # stable: keeps the chosen order inside each group
-            self.pages.sort(key=lambda p: (self.KIND_RANK[self.status_kind(p)], stext(p)))
-        if sid:
-            self.sel = next((i for i, p in enumerate(self.pages) if p["id"] == sid), 0)
+            self.all.sort(key=lambda p: (self.KIND_RANK[self.status_kind(p)], stext(p)))
+        self.pages = [p for p in self.all if self.matches(p)]
+        self.sel = next((i for i, p in enumerate(self.pages) if p["id"] == sid), 0) if sid else 0
 
     def build_display(self):
         """Rows to draw: ("h", header text) between groups, ("r", index into self.pages) for pages."""
@@ -298,6 +336,12 @@ class App:
     def wide(self):
         return self.scr.getmaxyx()[1] >= self.PREVIEW_MIN_WIDTH
 
+    def track_selection(self):
+        """Note when the selected page changes: the preview starts at its top and waits a moment before fetching."""
+        cur = self.pages[self.sel]["id"] if self.pages and self.sel < len(self.pages) else None
+        if cur != self.sel_id:
+            self.sel_id, self.sel_changed, self.pscroll = cur, time.time(), 0
+
     def maybe_preview(self):
         """In a wide pane, fetch the body of the selected page once the selection has rested for a moment."""
         if self.job or self.detail or not self.pages or not self.wide() or self.sel >= len(self.pages):
@@ -328,8 +372,8 @@ class App:
             fresh = res.get("results", [])
             ids = {p["id"] for p in fresh}
             sid = self.pages[self.sel]["id"] if self.sel < len(self.pages) else None
-            extra = [p for p in self.pages if p["id"] not in ids]
-            self.pages = fresh + extra
+            extra = [p for p in self.all if p["id"] not in ids]
+            self.all = fresh + extra
             if len(extra) == 0:
                 self.has_more, self.cursor = bool(res.get("has_more")), res.get("cursor")
             self.groups = nt.status_groups(schema, self.cfg["status_property"])
@@ -371,27 +415,38 @@ class App:
         self.scr.addnstr(y, 0, "─" * (w - 1), w - 1, curses.A_DIM)
 
     def draw_tabs(self, w):
-        x = 1
         self.scr.addnstr(0, 0, " Notion ", w - 1, curses.A_BOLD)
-        x = 9
-        for i, f in enumerate(self.cfg["filters"]):
-            label = " %d %s " % (i + 1, f["name"])
-            if x + len(label) >= w:
-                break
-            self.scr.addnstr(0, x, label, w - 1 - x,
-                             self.cp(4) | curses.A_BOLD if i == self.fidx and self.colors
-                             else curses.A_REVERSE if i == self.fidx else curses.A_DIM)
-            x += len(label) + 1
         extras = ""
         if self.query:
             extras += ' · / "%s"' % self.query
+        if self.live:
+            extras += ' · typed "%s"' % self.live
+        if self.status_filter:
+            extras += " · status: %s" % self.status_filter
         if self.sort_mode:
             extras += " · sort: %s" % self.SORTS[self.sort_mode][1]
         if self.group:
             extras += " · grouped"
         right = "%s%d%s pages%s " % (self.spin() + " " if self.visible_job() else "", len(self.pages), "+" if self.has_more else "", extras)
-        if x + len(right) < w:
-            self.scr.addnstr(0, w - 1 - len(right), right, len(right), curses.A_DIM)
+        self.scr.addnstr(0, max(9, w - 1 - len(right)), right[:max(0, w - 10)], len(right), curses.A_DIM)
+        # as many tabs as fit between the name and the count, always including the active one
+        avail = w - 9 - len(right) - 2
+        labels = [" %s %s " % (str(i + 1) if i < 9 else "·", f["name"]) for i, f in enumerate(self.cfg["filters"])]
+        start = 0
+        while start < self.fidx and sum(len(l) + 1 for l in labels[start:self.fidx + 1]) + 2 > avail:
+            start += 1
+        x = 9
+        if start:
+            self.scr.addnstr(0, x, "‹", 1, curses.A_DIM)
+            x += 2
+        for i in range(start, len(labels)):
+            if x + len(labels[i]) + 2 > 9 + avail and i != self.fidx:
+                self.scr.addnstr(0, x, "›", 1, curses.A_DIM)
+                break
+            self.scr.addnstr(0, x, labels[i], max(1, w - 1 - x),
+                             self.cp(4) | curses.A_BOLD if i == self.fidx and self.colors
+                             else curses.A_REVERSE if i == self.fidx else curses.A_DIM)
+            x += len(labels[i]) + 1
 
     BODY_ATTR = {"rule": curses.A_DIM, "quote": curses.A_DIM, "fence": curses.A_DIM}
 
@@ -421,14 +476,19 @@ class App:
             self.scr.addnstr(y, x0, "Loading…", width, curses.A_DIM)
             return
         kinds = nt.style_lines(body)
+        wrapped = []
         for l, kind in zip(body, kinds):
             attr = {"heading": curses.A_BOLD | curses.A_UNDERLINE, "code": self.cp(2), "done": self.cp(3)}.get(kind, self.BODY_ATTR.get(kind, 0))
-            text = nt.display_line(l, kind)
-            for piece in (textwrap.wrap(text, width) or [""]):
-                if y >= bottom:
-                    return
-                self.scr.addnstr(y, x0, piece, width, attr)
-                y += 1
+            for piece in (textwrap.wrap(nt.display_line(l, kind), width) or [""]):
+                wrapped.append((piece, attr))
+        room = bottom - y
+        self.pscroll = max(0, min(self.pscroll, max(0, len(wrapped) - room)))
+        for piece, attr in wrapped[self.pscroll:self.pscroll + room]:
+            self.scr.addnstr(y, x0, piece, width, attr)
+            y += 1
+        if len(wrapped) > room:  # where we are in the page
+            mark = "%d%%" % min(100, 100 * (self.pscroll + room) // len(wrapped))
+            self.scr.addnstr(bottom - 1, x0 + width - len(mark), mark, len(mark), curses.A_DIM | curses.A_BOLD)
 
     def draw_list(self):
         h, w = self.scr.getmaxyx()
@@ -510,7 +570,7 @@ class App:
             self.scr.addnstr(h - 4, 2, "  ·  ".join(facts), w - 3, curses.A_DIM)
         self.rule(h - 3, w)
         self.footer([("⏎", "open"), ("s", "status"), ("d", "delegate"), ("f", "filters"), ("/", "search"),
-                     ("O", "sort"), ("g", "group"), ("?", "more")])
+                     ("F", "status"), ("O", "sort"), ("g", "group"), ("?", "more")])
 
     def draw_detail(self):
         h, w = self.scr.getmaxyx()
@@ -681,9 +741,7 @@ class App:
             return
         self.busy("Updating…")
         updated = self.client.set_status(page["id"], prop, kind, options[i])
-        for n, p in enumerate(self.pages):
-            if p["id"] == updated["id"]:
-                self.pages[n] = updated
+        self.replace_page(updated)
         if self.detail:
             self.open_page(updated)
         self.msg = "%s set to %s · press d to delegate it" % (prop, options[i])
@@ -781,9 +839,7 @@ class App:
             return
         self.busy("Updating…")
         updated = self.client.set_status(pid, self.cfg["status_property"], kind, target)
-        for n, p in enumerate(self.pages):
-            if p["id"] == pid:
-                self.pages[n] = updated
+        self.replace_page(updated)
         self.msg = "%s set to %s" % (self.cfg["status_property"], target)
 
     def delegate(self):
@@ -933,10 +989,27 @@ class App:
                 self.guard(self.refresh)
                 return
 
+    def suggested_tabs(self, client, schema, status_prop):
+        """Tabs for this database: Mine (through the same Assignee link the Notion boards use), sprint, open, all, and its views."""
+        views, me_page = [], None
+        try:
+            views = client.views()
+        except (nt.NotionError, oauth.OAuthError):
+            pass
+        try:
+            rel = st.assignee_relation(schema)
+            if rel:
+                url = client.find_person_page(rel, client.whoami()["user"])
+                me_page = (rel, url) if url else None
+        except (nt.NotionError, oauth.OAuthError):
+            pass
+        return st.suggest_filters(schema, status_prop, views, me_page)
+
     def reset_filters(self):
         """Replace the filter tabs with the ones this database supports: Mine first, then Current sprint, Open, All."""
-        flt = st.suggest_filters(self.client.discover(), self.cfg["status_property"])
-        if not self.confirm("Replace the filter tabs with %s? [y/N]" % ", ".join(f["name"] for f in flt)):
+        self.busy("Reading your views and your person page…")
+        flt = self.suggested_tabs(self.client, self.client.discover(), self.cfg["status_property"])
+        if not self.confirm("Replace the filter tabs with %s?" % ", ".join(f["name"] for f in flt)):
             return
         with open(cfgmod.config_path(), encoding="utf-8") as f:
             text = f.read()
@@ -955,7 +1028,7 @@ class App:
             return
         self.busy("Signing out…")
         oauth.logout()
-        self.pages, self.cache, self.detail = [], {}, None
+        self.all, self.pages, self.cache, self.detail = [], [], {}, None
         self.has_more, self.cursor, self.job = False, None, None
         self.client = mb.McpClient(self.cfg["data_source_id"]) if self.cfg else self.client
         self.client.want = set(self.cfg["columns"]) if self.cfg else set()
@@ -1142,13 +1215,87 @@ class App:
         if idx is not None and idx < len(self.cfg["filters"]):
             self.fidx = idx
             self.query = ""
+            self.status_filter = ""
             self.refresh_async("Loading %s…" % self.cfg["filters"][idx]["name"])
 
     def search(self):
-        q = self.ask("search: ", self.query)
-        if q is not None:
-            self.query = q.strip()
-            self.refresh_async("Searching…")
+        """Type to narrow the loaded pages at once; Enter also searches the whole database; Esc cancels."""
+        buf = self.query
+        curses.curs_set(1)
+        try:
+            while True:
+                self.live = buf
+                self.refilter()
+                self.draw_list()
+                h, w = self.scr.getmaxyx()
+                self.scr.addnstr(h - 1, 0, ("/ " + buf).ljust(w - 1), w - 1, curses.A_BOLD | curses.A_REVERSE)
+                self.scr.move(h - 1, min(2 + len(buf), w - 2))
+                k = self.scr.get_wch()
+                if k == "\x1b":
+                    self.live = ""
+                    self.refilter()
+                    return
+                if k in ("\n", "\r") and self.on_view_tab():
+                    self.live = buf.strip()  # keep narrowing the loaded pages; Esc clears
+                    self.refilter()
+                    self.msg = "narrowing this view by '%s' (Esc clears)" % self.live if self.live else ""
+                    return
+                if k in ("\n", "\r"):
+                    new = buf.strip()
+                    self.live = ""
+                    changed = new != self.query
+                    self.query = new
+                    self.refilter()
+                    if changed:
+                        self.refresh_async("Searching…" if new else "Loading…")
+                    return
+                if k in ("\x7f", "\b") or k == curses.KEY_BACKSPACE:
+                    buf = buf[:-1]
+                elif isinstance(k, str) and k.isprintable():
+                    buf += k
+        finally:
+            curses.curs_set(0)
+
+    def pick_status_filter(self):
+        """Show only one status among the loaded pages."""
+        seen = []
+        for p in sorted(self.all, key=lambda p: (self.KIND_RANK[self.status_kind(p)], nt.prop_text(p["properties"].get(self.cfg["status_property"])))):
+            t = nt.prop_text(p["properties"].get(self.cfg["status_property"]))
+            if t and t not in seen:
+                seen.append(t)
+        i = self.popup("Show only", ["(any status)"] + seen, 0 if not self.status_filter else 1 + seen.index(self.status_filter) if self.status_filter in seen else 0)
+        if i is None:
+            return
+        self.status_filter = seen[i - 1] if i else ""
+        self.refilter()
+        self.msg = ("showing %s" % self.status_filter) if self.status_filter else "showing every status"
+
+    def pick_view(self):
+        """Open one of the database's saved views as a tab (kept until you leave)."""
+        self.busy("Reading the views…")
+        views = self.client.views()
+        if not views:
+            self.msg = "this database has no saved views"
+            return
+        i = self.popup("Notion views", ["%s  (%s)" % (v["name"], v["type"] or "view") for v in views])
+        if i is None:
+            return
+        name = "▦ " + views[i]["name"]
+        for n, f in enumerate(self.cfg["filters"]):
+            if f.get("view") == views[i]["url"]:
+                self.pick_filter(n)
+                return
+        self.cfg["filters"].append({"name": name, "view": views[i]["url"]})
+        self.pick_filter(len(self.cfg["filters"]) - 1)
+
+    def clear_filters(self):
+        """Esc: drop the status filter and the search before quitting."""
+        had_query = bool(self.query)
+        self.live, self.status_filter, self.query = "", "", ""
+        self.refilter()
+        if had_query:
+            self.refresh_async("Loading…")
+        self.msg = "filters cleared"
 
     # ------------------------------------------------------------ first-run setup
     def show(self, lines, key=True):
@@ -1363,12 +1510,14 @@ class App:
             return False
         choice, schema, status_prop = picked
         self.picked_title = choice["title"]
-        self.picked_tabs = [f["name"] for f in st.suggest_filters(schema, status_prop)]
-        if confirm and not self.confirm("Replace config.toml for '%s'? Your filters and prompt are regenerated. [y/N]" % choice["title"]):
+        self.busy("Reading your views and your person page…")
+        tabs = self.suggested_tabs(mb.McpClient(choice["id"]), schema, status_prop)
+        self.picked_tabs = [f["name"] for f in tabs]
+        if confirm and not self.confirm("Replace config.toml for '%s'? Your filters and prompt are regenerated." % choice["title"]):
             return False
         os.makedirs(os.path.dirname(cfgmod.config_path()), exist_ok=True)
         with open(cfgmod.config_path(), "w", encoding="utf-8") as f:
-            f.write(st.render_config(choice, schema, status_prop))
+            f.write(st.render_config(choice, schema, status_prop, tabs))
         self.msg = "now browsing %s" % choice["title"]
         return True
 
@@ -1445,9 +1594,7 @@ class App:
                 if self.want_quit:
                     return
             self.poll_job()
-            cur = self.pages[self.sel]["id"] if self.pages and self.sel < len(self.pages) else None
-            if cur != self.sel_id:
-                self.sel_id, self.sel_changed = cur, time.time()
+            self.track_selection()
             self.maybe_preview()
             self.auto_refresh()
             self.poll_agents()
@@ -1491,8 +1638,19 @@ class App:
     def list_key(self, k):
         self.msg = "" if k != -1 else self.msg
         n = len(self.pages)
+        if k == 27 and (self.query or self.live or self.status_filter):
+            self.clear_filters()
+            return True
         if k in (ord("q"), 27):
             return False
+        if k in (curses.KEY_NPAGE, ord(" "), curses.KEY_PPAGE, ord("b"), ord("J"), ord("K")):
+            down = k in (curses.KEY_NPAGE, ord(" "), ord("J"))
+            step = 3 if k in (ord("J"), ord("K")) else max(3, self.scr.getmaxyx()[0] - 8)
+            if self.wide():  # the preview scrolls
+                self.pscroll = max(0, self.pscroll + (step if down else -step))
+            else:  # no preview: page through the list
+                self.sel = max(0, min(n - 1, self.sel + (step if down else -step)))
+            return True
         if k in (curses.KEY_DOWN, ord("j")):
             if self.sel >= n - 1 and self.has_more:
                 self.guard(self.load_more)
@@ -1508,6 +1666,10 @@ class App:
             self.guard(self.pick_filter, k - ord("1"))
         elif k == ord("/"):
             self.guard(self.search)
+        elif k == ord("F"):
+            self.guard(self.pick_status_filter)
+        elif k == ord("V"):
+            self.guard(self.pick_view)
         elif k == ord("O"):
             self.sort_mode = (self.sort_mode + 1) % len(self.SORTS)
             self.apply_sort()
