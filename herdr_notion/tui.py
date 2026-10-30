@@ -784,42 +784,64 @@ class App:
         self.scr.refresh()
         return self.scr.getch() if key else None
 
-    LOGO = {  # five-row block letters for the splash screen
-        "N": ["█   █", "██  █", "█ █ █", "█  ██", "█   █"],
-        "O": [" ███ ", "█   █", "█   █", "█   █", " ███ "],
-        "T": ["█████", "  █  ", "  █  ", "  █  ", "  █  "],
-        "I": [" ███ ", "  █  ", "  █  ", "  █  ", " ███ "],
-    }
+    # The Notion cube with its N, drawn in half-blocks from the logo (strokes in the terminal's text colour).
+    CUBE_LARGE = [
+        '   ▄▄▄▄▄▄▄▄▄▄▄▄▄███████████▄',
+        '████▀▀▀▀▀▀▀▀▀▀▀▀▀▀        ▀▀██▄',
+        '████▄                        ▀███▄',
+        '███████▄▄▄▄▄▄▄▄▄▄▄██████████████████',
+        '██████████▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀    ███',
+        '███████▀                          ██',
+        '███████     ▄▄▄▄▄▄▄     █████▀    ██',
+        '███████     ▀██████▄      ██      ██',
+        '███████      ████████     ██      ██',
+        '███████      ███▀█████▄   ██      ██',
+        '███████      ███  ▀█████  ██      ██',
+        '███████      ███   ▀█████▄██      ██',
+        '███████      ███     ███████      ██',
+        '███████      ███      ▀█████      ██',
+        ' ▀█████     ▄█████     ▀███▀      ██',
+        '   ████                          ███',
+        '    ▀███▄▄▄▄▄▄▄▄▄▄▄▄▄███████████████',
+        '      ▀████████████▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+    ]
+    CUBE_SMALL = [
+        '▄▄▄▄▄▄▄▄████████▀█▄▄',
+        '███                ▀█▄▄',
+        '█████▄▄▄▄███████████████',
+        '█████▀                ██',
+        '█████   ▄▄▄█▄   ▀██▀  ██',
+        '█████    █████   ██   ██',
+        '█████    ██▀███▄ ██   ██',
+        '█████    ██ ▀███▄██   ██',
+        '█████    ██   █████   ██',
+        '▀████   ▄██▄   ▀██▀   ██',
+        '  ▀██            ▄▄▄▄▄██',
+        '   ▀████████████▀▀▀▀▀▀▀▀',
+    ]
 
     def draw_splash(self, t):
-        """NOTION in block letters, centred, with 'with herdr' below. Letters appear one by one over the first half second."""
+        """The Notion cube appears row by row, then 'Notion with herdr' and what is loading."""
         h, w = self.scr.getmaxyx()
         self.scr.erase()
-        word = "NOTION"
-        logo_w = len(word) * 5 + (len(word) - 1) * 2
-        shown = min(len(word), int(t / 0.08) + 1)
-        if w >= logo_w + 4 and h >= 11:
-            top = (h - 9) // 2
-            for i, ch in enumerate(word[:shown]):
-                x = (w - logo_w) // 2 + i * 7
-                for r, row in enumerate(self.LOGO[ch]):
-                    self.scr.addnstr(top + r, x, row, 5, curses.A_BOLD)
-            y = top + 6
-        else:
-            y = h // 2 - 1
-            self.scr.addnstr(y, max(0, (w - 6) // 2), word[:shown], 6, curses.A_BOLD)
-            y += 1
-        if t > 0.5:
-            tag = "with  herdr"
-            self.scr.addnstr(y, max(0, (w - len(tag)) // 2), tag, len(tag), self.cp(2) | curses.A_BOLD)
-        if t > 0.6:
+        art = self.CUBE_LARGE if h >= 23 and w >= 40 else self.CUBE_SMALL if h >= 17 and w >= 28 else []
+        top = max(0, (h - (len(art) + 4)) // 2) if art else h // 2 - 1
+        shown = min(len(art), int(t / 0.03) + 1)
+        width = max((len(r) for r in art), default=0)
+        for i, row in enumerate(art[:shown]):
+            self.scr.addnstr(top + i, max(0, (w - width) // 2), row, w - 1, curses.A_BOLD)
+        y = top + len(art) + 1
+        if t > 0.55 or not art:
+            name = "Notion  with  herdr"
+            self.scr.addnstr(y, max(0, (w - len(name)) // 2), name, w - 1, curses.A_BOLD)
+        if t > 0.7:
             line = "%s %s" % (self.spin(), self.job["label"] if self.job else "ready")
-            self.scr.addnstr(y + 2, max(0, (w - len(line)) // 2), line, len(line), curses.A_DIM)
+            self.scr.addnstr(y + 1, max(0, (w - len(line)) // 2), line, w - 1, curses.A_DIM)
         self.scr.refresh()
 
     def splash(self, minimum=0.9):
         """Show the splash while the first page loads (a key skips the wait once it has loaded)."""
-        if self.scr.getmaxyx()[0] < 8:
+        if self.scr.getmaxyx()[0] < 5:
             return
         start = time.time()
         while True:
