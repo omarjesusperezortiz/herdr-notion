@@ -601,6 +601,9 @@ def log_path():
     return os.path.join(d, "error.log")
 
 
+TITLE = "herdr-notion-tui"  # exact value the open script looks for
+
+
 def set_title(title):
     """Terminal title: the open script reads it to tell if Notion is already running."""
     try:
@@ -612,7 +615,7 @@ def set_title(title):
 
 def main():
     os.environ.setdefault("ESCDELAY", "25")
-    set_title("herdr-notion")
+    set_title(TITLE)
     try:
         curses.wrapper(lambda scr: App(scr).run())
     except KeyboardInterrupt:

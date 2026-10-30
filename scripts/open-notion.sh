@@ -28,7 +28,11 @@ if [ "$placement" = "here" ]; then
   pane="${HERDR_PANE_ID:-}"
   if [ -n "$pane" ] && "$herdr_bin" pane get "$pane" >/dev/null 2>&1; then
     # already showing Notion: typing the command now would go into the TUI
-    case "$(pane_field "$pane" terminal_title_stripped)" in *herdr-notion*) exit 0 ;; esac
+    # exact match: a shell title like "user@host:~/projects/herdr-notion" must not count
+    if [ "$(pane_field "$pane" terminal_title_stripped)" = "herdr-notion-tui" ]; then
+      echo "Notion is already open in pane $pane"
+      exit 0
+    fi
     if [ -z "$(pane_field "$pane" agent)" ]; then
       cmd="$(printf 'PYTHONPATH=%q' "$root")"
       [ -n "${HERDR_PLUGIN_CONFIG_DIR:-}" ] && cmd+="$(printf ' HERDR_PLUGIN_CONFIG_DIR=%q' "$HERDR_PLUGIN_CONFIG_DIR")"
