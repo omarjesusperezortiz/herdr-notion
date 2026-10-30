@@ -43,6 +43,30 @@ class Discovery(unittest.TestCase):
         self.assertIsNone(setup.open_filter(SCHEMA, "Nope"))
 
 
+class StatusRanking(unittest.TestCase):
+    """Shape of a real task database: several select properties, 'Status' is a select."""
+    REAL = {"properties": {n: {"type": t, t: {"options": [{"name": "a"}, {"name": "b"}]}} for n, t in [
+        ("Effort", "select"), ("PR Status", "select"), ("Status", "select"), ("Type", "select"),
+        ("Priority", "select"), ("Repo", "select")]}}
+
+    def test_property_named_status_wins_over_schema_order(self):
+        self.assertEqual(setup.status_candidates(self.REAL)[0], "Status")
+        self.assertEqual(setup.status_candidates(self.REAL)[1], "PR Status")
+
+    def test_notion_status_type_beats_other_selects(self):
+        schema = {"properties": {"Kind": {"type": "select", "select": {}}, "Phase": {"type": "status", "status": {}}}}
+        self.assertEqual(setup.status_candidates(schema), ["Phase", "Kind"])
+
+    def test_named_select_beats_status_type(self):
+        schema = {"properties": {"Phase": {"type": "status", "status": {}}, "Status": {"type": "select", "select": {}}}}
+        self.assertEqual(setup.status_candidates(schema)[0], "Status")
+
+    def test_label_shows_type_and_options(self):
+        label = setup.property_label(self.REAL, "Status")
+        self.assertIn("select", label)
+        self.assertIn("a, b", label)
+
+
 class RenderConfig(unittest.TestCase):
     CHOICE = {"id": "ds1", "database_id": "db1", "title": 'Tasks "A"\nline'}
 

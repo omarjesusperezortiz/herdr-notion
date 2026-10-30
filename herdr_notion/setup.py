@@ -24,12 +24,37 @@ def database_choices(search_response):
     return out
 
 
+STATUS_WORDS = ("status", "state", "stage")
+
+
 def status_candidates(schema):
-    """Names of status/select properties, status ones first."""
+    """Names of status/select properties, best guess first: a property named
+    Status/State/Stage, then Notion's status type, then names containing those
+    words (e.g. 'PR Status'), then any other select."""
     props = schema.get("properties") or {}
-    status = [n for n, p in props.items() if p.get("type") == "status"]
-    select = [n for n, p in props.items() if p.get("type") == "select"]
-    return status + select
+
+    def rank(item):
+        name, p = item
+        low = name.lower().strip()
+        if low in STATUS_WORDS:
+            return 0
+        if p.get("type") == "status":
+            return 1
+        if any(w in low for w in STATUS_WORDS):
+            return 2
+        return 3
+
+    cands = [(n, p) for n, p in props.items() if p.get("type") in ("status", "select")]
+    return [n for n, _ in sorted(cands, key=rank)]  # sorted() is stable
+
+
+def property_label(schema, name):
+    """'Status  (select: To Do, Blocked, …)' so the user can tell candidates apart."""
+    p = (schema.get("properties") or {}).get(name) or {}
+    kind = p.get("type", "")
+    opts = [o["name"] for o in (p.get(kind) or {}).get("options", [])]
+    shown = ", ".join(opts[:4]) + (", …" if len(opts) > 4 else "")
+    return "%s  (%s: %s)" % (name, kind, shown)
 
 
 def column_candidates(schema, status_prop, limit=2):

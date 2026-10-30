@@ -119,7 +119,7 @@ class App:
         """(marker, text, color attr) for the status property of a page."""
         prop = self.cfg["status_property"]
         text = nt.prop_text(page["properties"].get(prop))
-        kind = nt.group_kind(self.groups.get(text, ""))
+        kind = nt.group_kind(self.groups.get(text, "")) or nt.guess_kind(text)
         return self.MARK[kind], text, self.cp(self.PAIR[kind])
 
     def rule(self, y, w):
@@ -246,7 +246,7 @@ class App:
         while True:
             h, w = self.scr.getmaxyx()
             items = [nt.clean(i) for i in items]
-            bw = min(w - 2, max([nt.cell_width(title)] + [nt.cell_width(i) + 5 for i in items]) + 2)
+            bw = min(w - 2, max([nt.cell_width(title) + 6] + [nt.cell_width(i) + 7 for i in items]))
             bh = min(h - 2, len(items) + 2)
             y0, x0 = (h - bh) // 2, (w - bw) // 2
             win = curses.newwin(bh, bw, y0, x0)
@@ -443,7 +443,7 @@ class App:
             if len(options) == 1:
                 status_prop = options[0]
             elif options:
-                j = self.popup("Status property (changed with s)", options)
+                j = self.popup("Which property is the status?", [st.property_label(schema, o) for o in options])
                 if j is None:
                     return False
                 status_prop = options[j]

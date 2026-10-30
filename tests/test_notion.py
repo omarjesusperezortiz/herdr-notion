@@ -159,6 +159,17 @@ class BodyStyle(unittest.TestCase):
         self.assertIsNone(nt.clipboard_cmd(lambda c: None))
 
 
+class GuessKind(unittest.TestCase):
+    def test_real_task_board_options(self):
+        got = {n: nt.guess_kind(n) for n in ["To Do", "Blocked", "In Progress", "Review", "Finished"]}
+        self.assertEqual(got, {"To Do": "todo", "Blocked": "", "In Progress": "progress",
+                               "Review": "progress", "Finished": "done"})
+
+    def test_unknown_and_empty(self):
+        self.assertEqual(nt.guess_kind("Whatever"), "")
+        self.assertEqual(nt.guess_kind(None), "")
+
+
 class TextWidth(unittest.TestCase):
     def test_clean_collapses_whitespace(self):
         self.assertEqual(nt.clean("a\nb\tc   d "), "a b c d")

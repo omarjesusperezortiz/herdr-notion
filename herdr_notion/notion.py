@@ -203,6 +203,19 @@ def group_kind(group_name):
     return ""
 
 
+def guess_kind(option_name):
+    """Marker kind for a select option with no group (plain select properties),
+    guessed from its name: 'todo' | 'progress' | 'done' | ''."""
+    n = (option_name or "").lower()
+    if any(w in n for w in ("done", "finish", "complete", "closed", "shipped", "merged", "released")):
+        return "done"
+    if any(w in n for w in ("progress", "doing", "review", "started", "active", "wip", "testing")):
+        return "progress"
+    if any(w in n for w in ("to do", "todo", "backlog", "not started", "new", "open", "planned", "draft")):
+        return "todo"
+    return ""
+
+
 def relative_time(iso, now=None):
     """'5m', '2h', '3d', '6w', '2y' for an ISO-8601 timestamp; '' if unparsable."""
     from datetime import datetime, timezone
