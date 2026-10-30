@@ -784,6 +784,56 @@ class App:
         self.scr.refresh()
         return self.scr.getch() if key else None
 
+    LOGO = {  # five-row block letters for the splash screen
+        "N": ["█   █", "██  █", "█ █ █", "█  ██", "█   █"],
+        "O": [" ███ ", "█   █", "█   █", "█   █", " ███ "],
+        "T": ["█████", "  █  ", "  █  ", "  █  ", "  █  "],
+        "I": [" ███ ", "  █  ", "  █  ", "  █  ", " ███ "],
+    }
+
+    def draw_splash(self, t):
+        """NOTION in block letters, centred, with 'with herdr' below. Letters appear one by one over the first half second."""
+        h, w = self.scr.getmaxyx()
+        self.scr.erase()
+        word = "NOTION"
+        logo_w = len(word) * 5 + (len(word) - 1) * 2
+        shown = min(len(word), int(t / 0.08) + 1)
+        if w >= logo_w + 4 and h >= 11:
+            top = (h - 9) // 2
+            for i, ch in enumerate(word[:shown]):
+                x = (w - logo_w) // 2 + i * 7
+                for r, row in enumerate(self.LOGO[ch]):
+                    self.scr.addnstr(top + r, x, row, 5, curses.A_BOLD)
+            y = top + 6
+        else:
+            y = h // 2 - 1
+            self.scr.addnstr(y, max(0, (w - 6) // 2), word[:shown], 6, curses.A_BOLD)
+            y += 1
+        if t > 0.5:
+            tag = "with  herdr"
+            self.scr.addnstr(y, max(0, (w - len(tag)) // 2), tag, len(tag), self.cp(2) | curses.A_BOLD)
+        if t > 0.6:
+            line = "%s %s" % (self.spin(), self.job["label"] if self.job else "ready")
+            self.scr.addnstr(y + 2, max(0, (w - len(line)) // 2), line, len(line), curses.A_DIM)
+        self.scr.refresh()
+
+    def splash(self, minimum=0.9):
+        """Show the splash while the first page loads (a key skips the wait once it has loaded)."""
+        if self.scr.getmaxyx()[0] < 8:
+            return
+        start = time.time()
+        while True:
+            self.poll_job()
+            t = time.time() - start
+            self.draw_splash(t)
+            if (not self.job and t >= minimum) or self.reconnect:
+                return
+            self.scr.timeout(60)
+            k = self.scr.getch()
+            self.scr.timeout(-1)
+            if k != -1 and not self.job:
+                return
+
     def first_run(self):
         """First start: sign in, pick the database, see the tabs. Returns True when config.toml is ready."""
         self.onboarding = True
@@ -919,7 +969,8 @@ class App:
         except (cfgmod.ConfigError, nt.NotionError) as e:
             self.show([str(e), "", "Press any key to quit."])
             return
-        self.refresh_async("Loading…")
+        self.refresh_async("Loading your pages…")
+        self.splash()
         while True:
             if self.reconnect:
                 self.connect_screen()
