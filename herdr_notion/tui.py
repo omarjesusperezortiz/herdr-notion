@@ -6,11 +6,13 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
 import traceback
 import webbrowser
 
 from . import config as cfgmod
 from . import delegate as dg
+from . import oauth
 from . import notion as nt
 from . import setup as st
 
@@ -20,7 +22,7 @@ HELP = [
                   ("f, 1-9", "switch filter"), ("/", "search by title"), ("Esc, q", "back / quit")]),
     ("Act", [("s", "change status (asks to confirm)"), ("d", "delegate to an agent"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
-    ("Config", [("r", "refresh"), ("R", "reload config"), ("T", "change the Notion token"), ("S", "settings (token, database, status property)")]),
+    ("Config", [("r", "refresh"), ("R", "reload config"), ("T", "change the Notion token"), ("S", "connection screen: status, sign in, token, database")]),
 ]
 
 class App:
@@ -29,6 +31,7 @@ class App:
         self.msg = ""
         self.cfg = None
         self.client = None
+        self.reconnect = ""  # set by guard() on a connection problem; the main loop opens the Connect screen
         self.fidx = 0
         self.query = ""
         self.pages = []
@@ -61,11 +64,18 @@ class App:
         """Run fn, turning expected errors into a status message."""
         try:
             return fn(*a)
-        except (nt.NotionError, dg.HerdrError, cfgmod.ConfigError) as e:
+        except (nt.NotionError, dg.HerdrError, cfgmod.ConfigError, oauth.OAuthError) as e:
             self.msg = str(e)
             if "Could not find" in self.msg:  # the token cannot see the configured database
-                self.msg = "This token cannot see the configured database. Press S, then b, to pick another."
+                self.msg = "This token cannot see the configured database."
+            if self.connection_problem(self.msg):
+                self.reconnect = self.msg
         return None
+
+    @staticmethod
+    def connection_problem(msg):
+        return any(x in msg for x in ("cannot see the configured database", "API token is invalid", "Notion 401",
+                                      "not signed in", "login expired"))
 
     # ------------------------------------------------------------ data
     def refresh(self):
@@ -375,39 +385,104 @@ class App:
         dg.send_prompt(pane, prompt)
         self.msg = "started %s and sent prompt" % kinds[j]["name"]
 
-    def settings(self):
-        """Read-only summary of the connection with keys to change each part."""
-        self.busy("Checking the connection…")
+    def check_connection(self):
+        """Ask Notion who the token belongs to and whether the configured database is visible."""
+        st_ = {"token": "", "token_ok": False, "db": "", "db_ok": False, "login": oauth.load()}
         try:
-            who = nt.Client(cfgmod.resolve_token(self.cfg), "").request("GET", "/users/me").get("name") or "the integration"
+            tok = cfgmod.resolve_token(self.cfg)
+            who = nt.Client(tok, "").request("GET", "/users/me").get("name") or "the integration"
+            st_.update(token="%s" % who, token_ok=True)
         except (nt.NotionError, cfgmod.ConfigError) as e:
-            who = "NOT CONNECTED (%s)" % e
-        over = cfgmod.token_override(self.cfg)
-        source = over or ("token file" if os.path.exists(cfgmod.token_path()) else "none")
+            st_["token"] = str(e)
+        if st_["token_ok"]:
+            try:
+                self.client.discover()
+                st_.update(db=self.source_title(), db_ok=True)
+            except nt.NotionError:
+                st_["db"] = "this token cannot see the configured database"
+        return st_
+
+    MENU = ["Sign in with the browser", "Paste an integration token", "Pick another database",
+            "Change the status property", "Clear the browser sign-in", "Reconnect (check again)"]
+
+    def connection(self, reason=""):
+        """Connection screen: status panel plus a menu. Opened with S, and by itself on a connection problem."""
+        sel = 0
+        self.reconnect = ""
+        self.busy("Checking the connection…")
+        status = self.check_connection()
         while True:
-            lines = ["Settings", "",
-                     "Token: %s · connected as %s" % (source, who),
-                     "Database: %s" % self.source_title(),
-                     "Status property: %s" % (self.cfg["status_property"] or "(none)"),
-                     "Columns: %s" % ", ".join(self.cfg["columns"]),
-                     "Filters: %s" % ", ".join(f["name"] for f in self.cfg["filters"]),
-                     "Config file: %s" % cfgmod.config_path(), "",
-                     "t: change the token   p: change the status property",
-                     "b: pick another database   Esc: back"]
-            if over:
-                lines.insert(3, "  (%s wins over the token file; change it there)" % over)
-            k = self.show(lines)
+            h, w = self.scr.getmaxyx()
+            self.scr.erase()
+            ok = status["token_ok"] and status["db_ok"]
+            over = cfgmod.token_override(self.cfg)
+            login = status["login"]
+            rows = [("Notion connection", None), ("", None)]
+            if reason:
+                rows += [("Problem:", reason), ("", None)]
+            rows += [
+                ("Status:", ("✔ connected" if ok else "✘ not connected")),
+                ("Integration token:", ("✔ %s" % status["token"]) if status["token_ok"] else "✘ %s" % status["token"]),
+                ("Token source:", over or ("token file" if os.path.exists(cfgmod.token_path()) else "none")),
+                ("Database:", ("✔ %s" % status["db"]) if status["db_ok"] else "✘ %s" % (status["db"] or "unknown")),
+                ("Status property:", self.cfg["status_property"] or "(none)"),
+                ("Browser sign-in:", ("✔ %s" % (login.get("workspace_name") or "signed in")) if login else "not signed in"),
+                ("URL:", oauth.MCP_HOST),
+                ("Config file:", cfgmod.config_path()), ("", None)]
+            y = 1
+            for label, value in rows:
+                if y >= h - len(self.MENU) - 3:
+                    break
+                if value is None:
+                    self.scr.addnstr(y, 2, label, w - 4, curses.A_BOLD)
+                else:
+                    self.scr.addnstr(y, 2, label.ljust(20), 20, curses.A_BOLD)
+                    self.scr.addnstr(y, 22, value, max(w - 24, 1))
+                y += 1
+            for i, item in enumerate(self.MENU):
+                line = "%s %d. %s" % ("❯" if i == sel else " ", i + 1, item)
+                self.scr.addnstr(y + i, 2, line, w - 4, curses.A_REVERSE if i == sel else 0)
+            self.scr.addnstr(min(y + len(self.MENU) + 1, h - 1), 2, "↑↓ move · Enter choose · 1-6 jump · Esc close", w - 4, curses.A_DIM)
+            self.scr.refresh()
+            k = self.scr.getch()
             if k in (27, ord("q")):
+                if reason and not ok:
+                    self.msg = "not connected: press S to fix it"
                 return
-            if k == ord("t"):
-                self.guard(self.change_token)
-                return
-            if k == ord("p"):
-                self.guard(self.change_status_property)
-                return
-            if k == ord("b"):
-                self.guard(self.change_database)
-                return
+            if k in (curses.KEY_DOWN, ord("j")):
+                sel = min(sel + 1, len(self.MENU) - 1)
+                continue
+            if k in (curses.KEY_UP, ord("k")):
+                sel = max(sel - 1, 0)
+                continue
+            if ord("1") <= k <= ord("0") + len(self.MENU):
+                sel = k - ord("1")
+            elif k not in (10, 13, curses.KEY_ENTER):
+                continue
+            self.msg = ""
+            action = (self.sign_in, self.change_token, self.change_database, self.change_status_property,
+                      self.clear_sign_in, lambda: None)[sel]
+            self.guard(action)
+            reason = self.msg if self.msg and self.connection_problem(self.msg) else ""
+            self.reconnect = ""
+            self.busy("Checking the connection…")
+            status = self.check_connection()
+            if status["token_ok"] and status["db_ok"]:
+                reason = ""
+                self.guard(self.refresh)
+                if self.msg and self.msg.startswith(("signed in", "token saved", "now browsing")):
+                    return
+            elif self.msg and not reason:
+                reason = self.msg
+
+    def clear_sign_in(self):
+        self.msg = "browser sign-in cleared" if oauth.logout() else "was not signed in"
+
+    def settings(self):
+        self.connection()
+
+    def connect_screen(self):
+        self.connection(self.reconnect)
 
     def source_title(self):
         try:
@@ -458,6 +533,60 @@ class App:
         self.load_config()
         self.refresh()
         self.msg = "now browsing %s" % choice["title"]
+
+    def sign_in(self):
+        """Sign in with the browser, inside the pane. The browser reaches a local address on this
+        machine; when it is on another machine, p lets you paste the address it ended on."""
+        flow = oauth.Flow()
+        try:
+            webbrowser.open(flow.url)
+        except Exception:
+            pass
+        res = None
+        self.scr.timeout(300)
+        try:
+            end = time.time() + 300
+            while time.time() < end:
+                res = flow.poll()
+                if res:
+                    break
+                h, w = self.scr.getmaxyx()
+                self.scr.erase()
+                head = ["Sign in to Notion", "", "A browser tab is opening. Choose a workspace and approve.",
+                        "No tab, or the browser is on another machine? Open this link:", ""]
+                tail = ["", "When the browser ends on a page that will not load, press p and paste its address.",
+                        "This screen continues by itself once Notion answers. Esc cancels."]
+                url = [flow.url[i:i + max(w - 4, 10)] for i in range(0, len(flow.url), max(w - 4, 10))]
+                for y, line in enumerate((head + url + tail)[:h - 1]):
+                    self.scr.addnstr(1 + y, 2, line, w - 3, curses.A_BOLD if y == 0 else 0)
+                self.scr.refresh()
+                k = self.scr.getch()
+                if k == 27:
+                    flow.close()
+                    self.msg = "sign-in cancelled"
+                    return
+                if k == ord("p"):
+                    self.scr.timeout(-1)
+                    pasted = self.ask("address: ")
+                    self.scr.timeout(300)
+                    if pasted and pasted.strip():
+                        res = flow.parse(pasted)
+                        break
+            else:
+                flow.close()
+                raise oauth.OAuthError("timed out waiting for the browser sign-in")
+        finally:
+            self.scr.timeout(-1)
+        self.busy("Finishing the sign-in…")
+        info = flow.finish(res)
+        self.msg = "signed in%s" % (" to %s" % info["workspace_name"] if info.get("workspace_name") else "")
+
+    def account(self):
+        i = self.popup("Connect to Notion", ["Sign in with the browser", "Paste an integration token"])
+        if i == 0:
+            self.sign_in()
+        elif i == 1:
+            self.change_token()
 
     def change_token(self):
         """Replace the saved token. The new one is checked against Notion before it is written."""
@@ -641,6 +770,8 @@ class App:
             return
         self.guard(self.refresh)
         while True:
+            if self.reconnect:
+                self.connect_screen()
             (self.draw_detail if self.detail else self.draw_list)()
             self.scr.refresh()
             k = self.scr.getch()
@@ -669,7 +800,7 @@ class App:
         elif k == ord("?"):
             self.help()
         elif k == ord("T"):
-            self.guard(self.change_token)
+            self.guard(self.account)
         elif k == ord("S"):
             self.guard(self.settings)
 
