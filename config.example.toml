@@ -6,53 +6,35 @@
 # The running pane reloads the config on `R`.
 
 [notion]
-# Id of the database (the 32-hex part of its URL). The database must be shared
-# with your integration (see the README).
-database_id = "00000000000000000000000000000000"
-
-# Optional. Shell command that prints the integration token (the token is never
-# stored in this file). Without it the plugin uses $NOTION_TOKEN, then the
-# `token` file written by the first-run setup. Example for the macOS keychain:
-#   security add-generic-password -s notion-token -a "$USER" -w '<TOKEN>'
-# api_token_cmd = "security find-generic-password -s notion-token -w"
-
-# Optional. Only needed if the database has several data sources
-# (Notion API 2025-09-03); by default the first one is used.
-# data_source_id = ""
-
-# Name of the status (or select) property that `s` changes.
+# Written by the first-run setup, which also signs you in with the browser.
+# The data source id is the `collection://` id of the database.
+data_source_id = "00000000-0000-0000-0000-000000000000"
 status_property = "Status"
+columns = ["Status", "Priority", "Assignee"]
 
-# Columns shown in the list besides the title. Names of database properties.
-columns = ["Status", "Assignee"]
-
-# Property used by `/` title search. Leave empty to auto-detect the title property.
+# Optional. Name of the title property when it is not detected.
 # title_property = "Name"
-
-# Notion user id substituted for {me} in filters (a person property filter
-# needs an id, not a name). Find yours in the API response of any page.
-me_user_id = "00000000-0000-0000-0000-000000000000"
 
 page_size = 50
 
-# Named filters, switched with `f` or 1-9. `filter` is a raw Notion filter
-# object (https://developers.notion.com/reference/filter-data-source-entries).
-# Strings may use {me}. `sort` is optional.
-
-[[filters]]
-name = "All"
+# Named filter tabs, switched with `f` or 1-9. The first one opens. `filter` is a
+# Notion filter object (https://developers.notion.com/reference/filter-data-source-entries);
+# `people = { contains = "me" }` means "assigned to the signed-in user".
+# The setup writes the ones your database supports; `S` -> "Reset the filter tabs" redoes it.
 
 [[filters]]
 name = "Mine"
-filter = { property = "Assignee", people = { contains = "{me}" } }
-sort = { property = "Last edited", direction = "descending" }
+filter = { and = [
+  { property = "Assignee", people = { contains = "me" } },
+  { property = "Status", status = { does_not_equal = "Done" } },
+] }
 
 [[filters]]
-name = "Open"
-filter = { and = [
-  { property = "Status", status = { does_not_equal = "Done" } },
-  { property = "Assignee", people = { contains = "{me}" } },
-] }
+name = "Current sprint"
+filter = { property = "Current sprint?", formula = { checkbox = { equals = true } } }
+
+[[filters]]
+name = "All"
 
 [delegate]
 # Prompt sent to the agent you pick with `d`. Placeholders:

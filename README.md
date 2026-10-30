@@ -40,36 +40,25 @@ nothing is typed into the agent. Invoking it while Notion is already open
 there does nothing. Variants: `open-notion-split`, `open-notion-overlay`,
 `open-notion-tab`. On first run it starts a short setup:
 
-1. **Create an integration** (once): open <https://www.notion.so/profile/integrations>,
-   choose **New integration**, type **Internal**, save, and copy the secret.
-2. **Paste the secret** into the pane. It is hidden, checked against Notion, and
-   saved next to the config in a file only you can read (`token`).
-3. **Share a database with the integration** if the pane says none is shared:
-   open the database in Notion, `•••` → **Connections** → add your integration.
-   Then press `r` in the pane.
-4. **Pick the database** and its status property from lists.
+1. **Sign in with Notion.** The plugin opens your browser, you choose a workspace
+   and approve. Nothing is copied or pasted. If the browser is on another machine,
+   press `c` to copy the link, open it there, then press `p` and paste the address
+   the browser ends on.
+2. **Pick the database** by typing part of its name (or pasting its Notion link),
+   then its status property.
 
-That writes `config.toml` with an "All" filter and, when your status property has
-a *Complete* group, an "Open" filter. Edit the file for more filters, columns and
-the delegate prompt (see below). To run the setup again, delete `config.toml`
-from `herdr plugin config-dir herdr-notion`.
+That writes `config.toml` with filter tabs your database supports: **Mine**
+(pages assigned to you that are not finished, opened first), **Current sprint**
+when there is a checkbox or formula named like it, **Open**, and **All**. Press
+`S` for the connection screen: it shows who is signed in and lets you sign in
+again, pick another database, change the status property, reset the filter tabs
+or sign out. A connection problem opens that screen by itself.
 
-Token sources, first match wins: `api_token_cmd` in the config (a shell command
-that prints it, for example a keychain lookup), the `NOTION_TOKEN` environment
-variable, the `token` file.
-
-### Change the token
-
-Press `T` in the plugin, or run this in any terminal (the secret is typed
-hidden and checked against Notion before anything is written):
-
-```sh
-bash scripts/set-token.sh        # from the plugin folder
-# or: PYTHONPATH=<plugin folder> python3 -m herdr_notion token
-```
-
-Both replace the `token` file. If `api_token_cmd` or `NOTION_TOKEN` is set it
-still wins, and the tool says so.
+The sign-in is Notion's own OAuth for MCP clients (PKCE, no client secret). It is
+stored in `oauth.json` next to the config, readable only by you, and renews
+itself. Data is read and written through Notion's hosted MCP server
+(`https://mcp.notion.com/mcp`). Workspace admins can restrict which MCP clients
+may connect; if yours does, the sign-in page says so.
 
 Bind a key to open it, in `~/.config/herdr/config.toml`:
 
@@ -82,7 +71,7 @@ command = "herdr-notion.open-notion"
 
 ### Manual setup
 
-Skip the wizard by copying the example and editing it:
+Skip the first-run setup by copying the example and editing it (you still sign in with the browser):
 
 ```sh
 mkdir -p "$(herdr plugin config-dir herdr-notion)"
@@ -95,13 +84,10 @@ cp config.example.toml "$(herdr plugin config-dir herdr-notion)/config.toml"
 
 | Key | Meaning |
 | --- | --- |
-| `database_id` | The database to browse (or give `data_source_id`). |
-| `api_token_cmd` | Optional. Shell command that prints the token; the token is never stored in the config. Without it, `$NOTION_TOKEN` and then the `token` file are used. |
-| `data_source_id` | Optional with `database_id`. Needed for databases with several data sources; the first is used by default. |
+| `data_source_id` | The data source to browse (set by the setup; the `collection://` id of the database). |
 | `status_property` | Status (or select) property that `s` changes. Default `Status`. |
 | `columns` | Property names shown next to the title in the list. |
 | `title_property` | Property searched by `/`. Auto-detected if empty. |
-| `me_user_id` | Notion user id substituted for `{me}` in filters. |
 | `page_size` | Pages per query, default 50. |
 
 `[[filters]]`: `name`, optional `filter` (a raw
@@ -132,8 +118,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `]` / `[` | next / previous page while reading one |
 | `y` / `Y` | copy the page URL / the delegate prompt (pbcopy, wl-copy, xclip or xsel) |
 | `r` / `R` | refresh / reload config |
-| `T` | change the Notion token |
-| `S` | settings: shows the token source and who it is connected as, the database, status property, columns and filters; `t` token, `p` status property, `b` another database (asks before rewriting `config.toml`) |
+| `S` | connection screen: who is signed in, the database; sign in again, pick another database, change the status property, reset the filter tabs, sign out |
 | `?` | help |
 | `Esc`, `q` | back / quit |
 
@@ -153,11 +138,13 @@ the prompt. If it never becomes ready, nothing is sent.
   body styling, property rendering, filter/query building, status patch body, prompt
   template, config and TOML parsing, delegate command sequences with a fake
   herdr runner.
-- Driven end to end in a pty against mocked Notion responses: setup wizard
-  (bad secret, nothing shared, pick a database), list, open, status change.
-- **Not tested against real Notion:** authentication, `/users/me` and `/search` used by the setup, the data source
-  discovery and query calls, pagination, `PATCH` of a status property, and
-  rarely used property and block types.
+- Driven in a pty against a real Notion workspace, read only: sign-in screen, the
+  connection screen, filter tabs (Mine, Current sprint, Open, All), list, open a page,
+  paging between pages.
+- **Not tested against real Notion:** the status change (`notion-update-page`),
+  pagination beyond one page of rows (the MCP rows call returns up to 100 and no
+  cursor), people names for every property type, and workspaces that block custom
+  MCP clients.
 - **Not tested against a real agent:** the delegate flow, especially starting a
   new agent. `agent list`, plugin linking and manifest validation were checked
   against the installed herdr.

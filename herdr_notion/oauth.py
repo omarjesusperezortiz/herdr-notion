@@ -26,7 +26,7 @@ class OAuthError(Exception):
 
 
 def store_path():
-    return os.path.join(os.path.dirname(cfgmod.token_path()), "oauth.json")
+    return os.path.join(os.path.dirname(cfgmod.config_path()), "oauth.json")
 
 
 def _http(url, data=None, headers=None, method=None, timeout=30):
@@ -83,8 +83,14 @@ def register(meta, redirect_uri):
 
 class _Callback(http.server.BaseHTTPRequestHandler):
     result = None
+    start_url = ""  # /start redirects here: a short, clickable stand-in for the long authorization link
 
     def do_GET(self):
+        if self.path.split("?")[0] == "/start" and type(self).start_url:
+            self.send_response(302)
+            self.send_header("Location", type(self).start_url)
+            self.end_headers()
+            return
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         if "code" in q or "error" in q:
             type(self).result = {k: v[0] for k, v in q.items()}
@@ -149,6 +155,8 @@ class Flow:
         self.url = self.meta["authorization_endpoint"] + "?" + urllib.parse.urlencode({
             "response_type": "code", "client_id": self.client_id, "redirect_uri": self.redirect,
             "state": self.state, "code_challenge": challenge, "code_challenge_method": "S256", "prompt": "consent"})
+        _Callback.start_url = self.url
+        self.short = "http://127.0.0.1:%d/start" % self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def poll(self):

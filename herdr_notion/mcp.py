@@ -3,13 +3,14 @@ import json
 import urllib.error
 import urllib.request
 
+from . import notion as nt
 from . import oauth
 
 URL = oauth.MCP_HOST + "/mcp"
 PROTOCOL = "2025-06-18"
 
 
-class McpError(Exception):
+class McpError(nt.NotionError):
     pass
 
 

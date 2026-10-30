@@ -2,12 +2,6 @@ import unittest
 
 from herdr_notion import config, setup, tomlcompat
 
-SEARCH = {"results": [
-    {"object": "data_source", "id": "ds1", "title": [{"plain_text": "Tasks"}], "parent": {"type": "database_id", "database_id": "db1"}},
-    {"object": "page", "id": "pg"},
-    {"object": "data_source", "id": "ds2", "title": [], "parent": {"database_id": "db2"}},
-]}
-
 SCHEMA = {"properties": {
     "Name": {"type": "title", "title": {}},
     "Notes": {"type": "rich_text", "rich_text": {}},
@@ -22,11 +16,6 @@ SCHEMA = {"properties": {
 
 
 class Discovery(unittest.TestCase):
-    def test_database_choices(self):
-        self.assertEqual(setup.database_choices(SEARCH), [
-            {"id": "ds1", "database_id": "db1", "title": "Tasks"},
-            {"id": "ds2", "database_id": "db2", "title": "(untitled)"}])
-
     def test_status_candidates_prefers_status_type(self):
         self.assertEqual(setup.status_candidates(SCHEMA), ["State", "Priority"])
 
@@ -83,8 +72,9 @@ class RenderConfig(unittest.TestCase):
         self.assertEqual(cfg["data_source_id"], "ds1")
         self.assertEqual(cfg["status_property"], "State")
         self.assertEqual(cfg["columns"], ["State", "Priority", "Owner"])
-        self.assertEqual([f["name"] for f in cfg["filters"]], ["All", "Open"])
+        self.assertEqual([f["name"] for f in cfg["filters"]], ["Mine", "Open", "All"])
         self.assertEqual(cfg["filters"][1]["filter"]["and"][0]["status"]["does_not_equal"], "Done")
+        self.assertEqual(cfg["filters"][0]["filter"]["and"][0], {"property": "Owner", "people": {"contains": "me"}})
 
     def test_fallback_parser_agrees(self):
         text = setup.render_config(self.CHOICE, SCHEMA, "State")
@@ -97,9 +87,46 @@ class RenderConfig(unittest.TestCase):
 
     def test_no_status_property(self):
         cfg = config.normalize(tomlcompat.loads(setup.render_config(self.CHOICE, SCHEMA, "")))
-        self.assertEqual(cfg["filters"], [{"name": "All"}])
+        self.assertEqual([f["name"] for f in cfg["filters"]], ["Mine", "All"])
+        self.assertEqual(cfg["filters"][0]["filter"], {"property": "Owner", "people": {"contains": "me"}})
         self.assertEqual(cfg["status_property"], "")
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SuggestedFilters(unittest.TestCase):
+    def test_sprint_checkbox_and_formula(self):
+        box = {"properties": {"This sprint": {"type": "checkbox", "checkbox": {}}}}
+        self.assertEqual(setup.sprint_filter(box), {"property": "This sprint", "checkbox": {"equals": True}})
+        formula = {"properties": {"Current sprint?": {"type": "formula", "formula": {}}}}
+        self.assertEqual(setup.sprint_filter(formula), {"property": "Current sprint?", "formula": {"checkbox": {"equals": True}}})
+        self.assertIsNone(setup.sprint_filter({"properties": {"Sprints": {"type": "relation", "relation": {}}}}))
+
+    def test_person_property_prefers_assignee_names(self):
+        schema = {"properties": {"Created by me": {"type": "people", "people": {}}, "Assignee": {"type": "people", "people": {}}}}
+        self.assertEqual(setup.person_property(schema), "Assignee")
+
+    def test_mine_is_first_and_excludes_finished(self):
+        flt = setup.suggest_filters(SCHEMA, "State")
+        self.assertEqual([f["name"] for f in flt], ["Mine", "Open", "All"])
+        self.assertEqual(len(flt[0]["filter"]["and"]), 2)
+
+    def test_sprint_tabs_only_when_the_database_has_one(self):
+        schema = dict(SCHEMA, properties=dict(SCHEMA["properties"], **{"Current sprint?": {"type": "formula", "formula": {}}}))
+        names = [f["name"] for f in setup.suggest_filters(schema, "State")]
+        self.assertEqual(names, ["Mine", "Current sprint", "Mine · sprint", "Open", "All"])
+
+    def test_plain_database_still_gets_all(self):
+        self.assertEqual(setup.suggest_filters({"properties": {"Name": {"type": "title", "title": {}}}}, ""), [{"name": "All"}])
+
+
+class ReplaceFilters(unittest.TestCase):
+    def test_keeps_everything_else(self):
+        text = '[notion]\ndata_source_id = "d"\n\n[[filters]]\nname = "All"\n\n[delegate]\nprompt = "p"\n\n[[filters]]\nname = "Old"\n'
+        out = setup.replace_filters(text, [{"name": "Mine", "filter": {"property": "Owner", "people": {"contains": "me"}}}, {"name": "All"}])
+        cfg = config.normalize(tomlcompat.loads(out))
+        self.assertEqual([f["name"] for f in cfg["filters"]], ["Mine", "All"])
+        self.assertEqual(cfg["delegate"]["prompt"], "p")
+        self.assertEqual(cfg["data_source_id"], "d")

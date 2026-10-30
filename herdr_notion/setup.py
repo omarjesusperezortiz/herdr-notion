@@ -4,24 +4,10 @@ Pure functions only; the screens live in tui.py.
 """
 import json
 
+import re
 from . import notion as nt
 
-SEARCH_BODY = {"filter": {"property": "object", "value": "data_source"}, "page_size": 50}
 COLUMN_TYPES = ("people", "select", "multi_select", "date", "unique_id")
-
-
-def database_choices(search_response):
-    """[{id, database_id, title}] from a /search response for data sources."""
-    out = []
-    for r in search_response.get("results", []):
-        if r.get("object") != "data_source":
-            continue
-        out.append({
-            "id": r["id"],
-            "database_id": (r.get("parent") or {}).get("database_id", ""),
-            "title": nt.rich_text(r.get("title")) or "(untitled)",
-        })
-    return out
 
 
 STATUS_WORDS = ("status", "state", "stage")
@@ -83,6 +69,66 @@ def open_filter(schema, status_prop):
     return conds[0] if len(conds) == 1 else {"and": conds}
 
 
+PERSON_WORDS = ("assign", "owner", "responsible", "responsable", "asignad", "person", "who")
+SPRINT_RE = re.compile(r"(current|this|active|actual|activo)\W*sprint|sprint\W*(actual|activo|en curso|current)", re.I)
+
+
+def person_property(schema):
+    """The people property that says who a page belongs to, best name match first."""
+    props = [(n, p) for n, p in (schema.get("properties") or {}).items() if p.get("type") == "people"]
+    props.sort(key=lambda np: 0 if any(w in np[0].lower() for w in PERSON_WORDS) else 1)
+    return props[0][0] if props else ""
+
+
+def sprint_filter(schema):
+    """Filter for 'in the current sprint' when the database has a checkbox or formula named like it."""
+    for n, p in (schema.get("properties") or {}).items():
+        if SPRINT_RE.search(n) and p.get("type") in ("checkbox", "formula"):
+            if p["type"] == "checkbox":
+                return {"property": n, "checkbox": {"equals": True}}
+            return {"property": n, "formula": {"checkbox": {"equals": True}}}
+    return None
+
+
+def suggest_filters(schema, status_prop):
+    """Tabs worth having, first one is what opens: Mine, Current sprint, Open, All. Only what this database supports."""
+    open_ = open_filter(schema, status_prop) if status_prop else None
+
+    def and_(*conds):
+        conds = [c for c in conds if c]
+        return conds[0] if len(conds) == 1 else {"and": conds}
+
+    out = []
+    who = person_property(schema)
+    if who:
+        out.append({"name": "Mine", "filter": and_({"property": who, "people": {"contains": "me"}}, open_)})
+    sprint = sprint_filter(schema)
+    if sprint:
+        out.append({"name": "Current sprint", "filter": and_(sprint, open_)})
+        if who:
+            out.append({"name": "Mine · sprint", "filter": and_({"property": who, "people": {"contains": "me"}}, sprint, open_)})
+    if open_:
+        out.append({"name": "Open", "filter": open_})
+    out.append({"name": "All"})
+    return out
+
+
+def render_filters(filters):
+    lines = []
+    for f in filters:
+        lines += ["[[filters]]", "name = %s" % toml_value(f["name"])]
+        if f.get("filter"):
+            lines.append("filter = %s" % toml_value(f["filter"]))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def replace_filters(text, filters):
+    """config.toml text with every [[filters]] table replaced by `filters`; the rest is kept as written."""
+    text = re.sub(r"(?ms)^\[\[filters\]\]\n.*?(?=^\[|\Z)", "", text).rstrip()
+    return text + "\n\n" + render_filters(filters)
+
+
 def toml_value(v):
     """Render str / list / dict / bool / int as TOML (inline tables for dicts)."""
     if isinstance(v, bool):
@@ -103,7 +149,7 @@ def render_config(choice, schema, status_prop):
     cols = ([status_prop] if status_prop else []) + column_candidates(schema, status_prop)
     lines = [
         "# Written by the herdr-notion setup. See config.example.toml for every option.",
-        "# The Notion token is stored next to this file, in `token` (owner-only).",
+        "# Your Notion sign-in is stored next to this file, in `oauth.json` (owner-only).",
         "",
         "[notion]",
         "# %s" % choice["title"].replace("\n", " "),
@@ -112,10 +158,5 @@ def render_config(choice, schema, status_prop):
         "status_property = %s" % toml_value(status_prop),
         "columns = %s" % toml_value(cols),
         "",
-        "[[filters]]",
-        'name = "All"',
     ]
-    flt = open_filter(schema, status_prop) if status_prop else None
-    if flt:
-        lines += ["", "[[filters]]", 'name = "Open"', "filter = %s" % toml_value(flt)]
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n" + render_filters(suggest_filters(schema, status_prop))

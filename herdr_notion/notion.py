@@ -1,8 +1,6 @@
-"""Notion REST client (urllib) plus pure helpers: filters, flattening."""
+"""Pure helpers for Notion pages: filters, properties, flattening, prompt rendering."""
 import json
 import unicodedata
-import urllib.error
-import urllib.request
 
 API = "https://api.notion.com/v1"
 VERSION = "2025-09-03"  # data sources: queries go to /data_sources/{id}/query
@@ -369,80 +367,3 @@ def render_prompt(template, page, body, max_body_chars=6000):
 
 
 # ---------------------------------------------------------------------- client
-
-class Client:
-    def __init__(self, token, database_id, data_source_id=""):
-        self.token = token
-        self.database_id = database_id
-        self.data_source_id = data_source_id
-        self._schema = None
-
-    def request(self, method, path, body=None):
-        data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(API + path, data=data, method=method, headers={
-            "Authorization": "Bearer " + self.token,
-            "Notion-Version": VERSION,
-            "Content-Type": "application/json",
-        })
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                return json.load(r)
-        except urllib.error.HTTPError as e:
-            try:
-                msg = json.load(e).get("message", "")
-            except Exception:
-                msg = ""
-            raise NotionError("Notion %d: %s" % (e.code, msg or e.reason))
-        except urllib.error.URLError as e:
-            raise NotionError("network error: %s" % e.reason)
-
-    def discover(self):
-        """Resolve the data source id and cache its schema."""
-        if self._schema:
-            return self._schema
-        if not self.data_source_id:
-            if not self.database_id:
-                raise NotionError("no database configured")
-            db = self.request("GET", "/databases/" + self.database_id)
-            sources = db.get("data_sources") or []
-            if not sources:
-                raise NotionError("database has no data sources (is it shared with the integration?)")
-            self.data_source_id = sources[0]["id"]
-        self._schema = self.request("GET", "/data_sources/" + self.data_source_id)
-        return self._schema
-
-    def query(self, body):
-        self.discover()
-        return self.request("POST", "/data_sources/%s/query" % self.data_source_id, body)
-
-    def get_page(self, page_id):
-        return self.request("GET", "/pages/" + page_id)
-
-    def body_lines(self, block_id, max_depth=2):
-        """Fetch children (paginated, nested up to max_depth) and flatten them."""
-        kids = {}
-
-        def fetch(bid, depth):
-            blocks = self._children(bid)
-            if depth < max_depth:
-                for b in blocks:
-                    if b.get("has_children") and b.get("type") != "child_page":
-                        kids[b["id"]] = fetch(b["id"], depth + 1)
-            return blocks
-
-        return flatten_blocks(fetch(block_id, 0), 0, kids)
-
-    def _children(self, block_id):
-        out, cursor = [], None
-        while True:
-            path = "/blocks/%s/children?page_size=100" % block_id
-            if cursor:
-                path += "&start_cursor=" + cursor
-            r = self.request("GET", path)
-            out.extend(r.get("results", []))
-            if not r.get("has_more"):
-                return out
-            cursor = r.get("next_cursor")
-
-    def set_status(self, page_id, prop_name, kind, option):
-        return self.request("PATCH", "/pages/" + page_id, status_patch(prop_name, kind, option))

@@ -1,6 +1,5 @@
 """Config loading. The file lives in the herdr-managed plugin config dir."""
 import os
-import subprocess
 
 from . import tomlcompat
 
@@ -51,11 +50,9 @@ def normalize(raw):
     return {
         "database_id": n.get("database_id", ""),
         "data_source_id": n.get("data_source_id", ""),
-        "api_token_cmd": n.get("api_token_cmd", ""),
         "status_property": n.get("status_property", "Status"),
         "columns": list(n.get("columns", [])),
         "title_property": n.get("title_property", ""),
-        "me_user_id": n.get("me_user_id", ""),
         "page_size": int(n.get("page_size", 50)),
         "filters": raw.get("filters") or [{"name": "All"}],
         "delegate": {
@@ -67,56 +64,3 @@ def normalize(raw):
             "agents": d.get("agents") or [{"name": "claude", "command": ["claude"]}],
         },
     }
-
-
-def token_path():
-    return os.path.join(os.path.dirname(config_path()), "token")
-
-
-def save_token(token, path=None):
-    """Write the token owner-readable only (0600), replacing any old file."""
-    path = path or token_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(token.strip() + "\n")
-    os.chmod(path, 0o600)
-
-
-def token_override(cfg, environ=None):
-    """Name of a token source that takes precedence over the token file, or ''."""
-    environ = os.environ if environ is None else environ
-    if cfg.get("api_token_cmd"):
-        return "api_token_cmd in config.toml"
-    if environ.get("NOTION_TOKEN"):
-        return "$NOTION_TOKEN"
-    return ""
-
-
-def resolve_token(cfg, environ=None, path=None):
-    """Token from api_token_cmd, else $NOTION_TOKEN, else the token file."""
-    environ = os.environ if environ is None else environ
-    if cfg.get("api_token_cmd"):
-        return read_token(cfg["api_token_cmd"])
-    if environ.get("NOTION_TOKEN"):
-        return environ["NOTION_TOKEN"].strip()
-    try:
-        with open(path or token_path(), encoding="utf-8") as f:
-            token = f.read().strip()
-    except FileNotFoundError:
-        token = ""
-    if not token:
-        raise NeedsSetup("no Notion token found")
-    return token
-
-
-def read_token(cmd):
-    """Run the user's token command; never log or echo its output."""
-    try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20)
-    except subprocess.TimeoutExpired:
-        raise ConfigError("api_token_cmd timed out")
-    token = r.stdout.strip()
-    if r.returncode != 0 or not token:
-        raise ConfigError("api_token_cmd failed (exit %d); check the command" % r.returncode)
-    return token

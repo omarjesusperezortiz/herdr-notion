@@ -11,8 +11,8 @@ class Toml(unittest.TestCase):
     def test_example_config_loads(self):
         with open(os.path.join(ROOT, "config.example.toml"), encoding="utf-8") as f:
             cfg = config.normalize(tomlcompat.loads(f.read()))
-        self.assertEqual([f["name"] for f in cfg["filters"]], ["All", "Mine", "Open"])
-        self.assertEqual(cfg["filters"][1]["filter"]["people"]["contains"], "{me}")
+        self.assertEqual([f["name"] for f in cfg["filters"]], ["Mine", "Current sprint", "All"])
+        self.assertEqual(cfg["filters"][0]["filter"]["and"][0]["people"]["contains"], "me")
         self.assertEqual(cfg["delegate"]["agents"][0]["command"], ["claude"])
         self.assertIn("{title}", cfg["delegate"]["prompt"])
 
@@ -36,7 +36,7 @@ class Toml(unittest.TestCase):
 class Normalize(unittest.TestCase):
     def test_missing_database_means_setup(self):
         with self.assertRaises(config.NeedsSetup):
-            config.normalize({"notion": {"api_token_cmd": "x"}})
+            config.normalize({"notion": {"status_property": "x"}})
         with self.assertRaises(config.NeedsSetup):
             config.normalize({})
 
@@ -49,38 +49,9 @@ class Normalize(unittest.TestCase):
             config.load("/nonexistent/dir/config.toml")
 
     def test_defaults(self):
-        cfg = config.normalize({"notion": {"database_id": "d", "api_token_cmd": "echo t"}})
+        cfg = config.normalize({"notion": {"database_id": "d"}})
         self.assertEqual(cfg["filters"], [{"name": "All"}])
         self.assertEqual(cfg["status_property"], "Status")
-
-    def test_token_cmd_failure_does_not_echo_output(self):
-        with self.assertRaises(config.ConfigError) as cm:
-            config.read_token("echo secret; exit 3")
-        self.assertNotIn("secret", str(cm.exception))
-        self.assertEqual(config.read_token("echo tok"), "tok")
-
-
-class Token(unittest.TestCase):
-    def test_order_cmd_then_env_then_file(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "sub", "token")
-            with self.assertRaises(config.NeedsSetup):
-                config.resolve_token({}, environ={}, path=path)
-            config.save_token("  from-file ", path)
-            self.assertEqual(config.resolve_token({}, environ={}, path=path), "from-file")
-            self.assertEqual(config.resolve_token({}, environ={"NOTION_TOKEN": "env"}, path=path), "env")
-            self.assertEqual(config.resolve_token({"api_token_cmd": "echo cmd"}, environ={"NOTION_TOKEN": "env"}, path=path), "cmd")
-
-    def test_token_file_is_owner_only(self):
-        import stat
-        import tempfile
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "token")
-            config.save_token("x", path)
-            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
-            config.save_token("y", path)  # overwrite keeps the mode
-            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
 
 
 class Delegate(unittest.TestCase):
@@ -122,10 +93,3 @@ class Delegate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class TokenOverrideTest(unittest.TestCase):
-    def test_reports_the_source_that_beats_the_token_file(self):
-        self.assertEqual(config.token_override({}, {}), "")
-        self.assertEqual(config.token_override({}, {"NOTION_TOKEN": "x"}), "$NOTION_TOKEN")
-        self.assertIn("api_token_cmd", config.token_override({"api_token_cmd": "echo x"}, {"NOTION_TOKEN": "x"}))
