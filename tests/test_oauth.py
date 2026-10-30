@@ -51,3 +51,24 @@ class Pkce(unittest.TestCase):
     def test_callback_parse_takes_the_first_value(self):
         self.assertEqual(oauth.Flow.parse("http://127.0.0.1:1/callback?code=abc&state=xyz"), {"code": "abc", "state": "xyz"})
         self.assertEqual(oauth.Flow.parse(""), {})
+
+
+class FixedAddress(unittest.TestCase):
+    def make(self):
+        with mock.patch.object(oauth, "discover", lambda: {"authorization_endpoint": "https://x/a", "token_endpoint": "https://x/t",
+                                                           "registration_endpoint": "https://x/r"}), \
+                mock.patch.object(oauth, "register", lambda meta, redirect: "cid"):
+            return oauth.Flow()
+
+    def test_same_address_every_time_and_a_fallback_when_busy(self):
+        first = self.make()
+        port = first.server.server_address[1]
+        self.assertEqual(port, oauth.PORT)
+        second = self.make()  # the first is still listening: take the next port
+        self.assertEqual(second.server.server_address[1], oauth.PORT + 1)
+        first.close()
+        second.close()
+        third = self.make()
+        self.assertEqual(third.server.server_address[1], oauth.PORT)
+        self.assertEqual(third.short, "http://127.0.0.1:%d/start" % oauth.PORT)
+        third.close()

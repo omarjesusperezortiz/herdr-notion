@@ -17,6 +17,7 @@ import webbrowser
 from . import config as cfgmod
 
 MCP_HOST = "https://mcp.notion.com"
+PORT = 53682  # local sign-in address: http://127.0.0.1:53682/start
 CLIENT_NAME = "herdr-notion"
 SKEW = 60  # refresh this many seconds before the access token expires
 
@@ -157,7 +158,15 @@ class Flow:
 
     def __init__(self):
         self.meta = discover()
-        self.server = http.server.HTTPServer(("127.0.0.1", 0), _Callback)
+        self.server = None
+        for port in (PORT, PORT + 1, 0):  # a fixed address, so the link is the same every time; any free port if taken
+            try:
+                self.server = http.server.HTTPServer(("127.0.0.1", port), _Callback)
+                break
+            except OSError:
+                continue
+        if self.server is None:
+            raise OAuthError("could not open a local port for the sign-in")
         _Callback.result = None
         self.redirect = "http://127.0.0.1:%d/callback" % self.server.server_address[1]
         self.client_id = register(self.meta, self.redirect)
