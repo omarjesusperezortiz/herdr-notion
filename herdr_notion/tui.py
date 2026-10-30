@@ -876,14 +876,20 @@ class App:
 
     @staticmethod
     def database_title(path):
+        """The database name written as a comment right under [notion] by the setup."""
         try:
             with open(path, encoding="utf-8") as f:
+                inside = False
                 for line in f:
-                    if line.startswith("# ") and "Written by" not in line and "Your Notion" not in line:
+                    if line.strip() == "[notion]":
+                        inside = True
+                    elif inside and line.startswith("# "):
                         return line[2:].strip()
+                    elif inside and line.strip() and not line.startswith("#"):
+                        break
         except OSError:
             pass
-        return os.path.basename(path)
+        return os.path.splitext(os.path.basename(path))[0]
 
     def switch_database(self):
         """D: switch between the databases you have set up (each keeps its own tabs and settings)."""
@@ -894,7 +900,7 @@ class App:
         _sh.copyfile(cfgmod.config_path(), current)  # remember this one before leaving it
         d, files = self.database_files()
         others = [f for f in files if f != current]
-        items = ["● " + self.database_title(current)] + [self.database_title(f) for f in others] + ["+ add another database…"]
+        items = ["● " + (self.source_title() if self.source_title() != "(unnamed)" else self.database_title(current))] + [self.database_title(f) for f in others] + ["+ add another database…"]
         i = self.popup("Databases", items)
         if i is None or i == 0:
             return
