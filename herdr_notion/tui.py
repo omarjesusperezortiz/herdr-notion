@@ -342,6 +342,8 @@ class App:
         if not page:
             return
         dcfg = self.cfg["delegate"]
+        (self.draw_detail if self.detail else self.draw_list)()  # put the screen back behind the popup
+        self.scr.refresh()
         agents = dg.list_agents()
         items = [dg.agent_label(a) for a in agents] + ["+ start new agent…"]
         i = self.popup("Delegate to", items)
