@@ -112,6 +112,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `Enter` | open page (properties + body as plain text) |
 | `f`, `1`-`9` | switch filter |
 | `/` | search by title |
+| `O` / `g` | sort (newest edit, title, status) / group the rows by status |
 | `s` | change status: pick an option, then confirm with `y` |
 | `d` | delegate: pick a running agent (status, cwd) or **+ start new agent…**, then the prompt is sent |
 | `o` | open the page in the browser |
@@ -121,6 +122,9 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `S` | connection screen: who is signed in, the database; sign in again, pick another database, change the status property, reset the filter tabs, sign out |
 | `?` | help |
 | `Esc`, `q` | back / quit |
+
+In a pane 120 columns or wider the list gets a **preview pane** with the selected page's body. A **•** before a title
+means the page was edited after you last looked at it, and the list refreshes itself every minute.
 
 The plugin never edits Notion on its own: the only write is the status change, after an explicit confirm. The only text sent to an agent is the delegate prompt, when you pick the agent.
 

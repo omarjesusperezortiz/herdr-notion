@@ -23,7 +23,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "search by title"), ("Esc, q", "back / quit")]),
-    ("Act", [("s", "change status (asks to confirm)"), ("d", "delegate to an agent"),
+    ("Act", [("s", "change status (asks to confirm)"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -40,6 +40,11 @@ class App:
         self.onboarding = False
         self.picked_title, self.picked_tabs = "", []
         self.want_quit = False
+        self.sort_mode = 0  # index into SORTS
+        self.group = False  # group rows under their status
+        self.seen = self.load_seen()  # page id -> last edit time already looked at (for the unread dot)
+        self.last_refresh = time.time()
+        self.sel_id, self.sel_changed = None, time.time()
         self.delegations = self.load_delegations()  # page id -> {"pane", "agent", "title", "seen_working", "done"}
         self.finished = []  # page ids whose agent just went idle: the main loop offers to move them to review
         self.next_agent_poll = 0
@@ -95,7 +100,7 @@ class App:
     SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
     def visible_job(self):
-        return bool(self.job and self.job["kind"] != "agents")
+        return bool(self.job and self.job["kind"] not in ("agents", "preview", "silent"))
 
     def spin(self):
         return self.SPINNER[int(time.time() * 10) % len(self.SPINNER)]
@@ -148,6 +153,10 @@ class App:
         self.has_more, self.cursor = bool(res.get("has_more")), res.get("cursor")
         self.sel = self.top = 0
         self.msg = ""
+        self.apply_sort()
+        self.sel = self.top = 0  # a new list starts at its first row, whatever the sort did
+        self.baseline_seen()
+        self.last_refresh = time.time()
 
     def refresh(self):
         """Blocking load, for flows that need the list right away."""
@@ -177,12 +186,15 @@ class App:
             self.pages += [p for p in res.get("results", []) if p["id"] not in have]
             self.has_more, self.cursor = bool(res.get("has_more")), res.get("cursor")
             self.msg = res.get("note", "")
+            self.apply_sort()
+            self.baseline_seen()
 
         self.start_job("loading more…", lambda: self.client.query(body, cursor=cursor, seen=seen), done, "more")
 
     def open_page(self, page):
         """Show the page at once with what the list already knows; the body fills in when it arrives."""
         pid = page["id"]
+        self.mark_seen(page)
         self.detail = {"page": page, "lines": [], "body": "Loading…" if pid not in self.cache else "\n".join(self.cache[pid])}
         self.dscroll = 0
 
@@ -202,6 +214,131 @@ class App:
         if self.detail:
             return self.detail["page"]
         return self.pages[self.sel] if self.pages else None
+
+    # ------------------------------------------------------------ sorting, grouping, unread
+    SORTS = [("edited", "newest edit"), ("title", "title A-Z"), ("status", "status")]
+    KIND_RANK = {"progress": 0, "todo": 1, "done": 2, "": 3}
+
+    def status_kind(self, page):
+        text = nt.prop_text(page["properties"].get(self.cfg["status_property"]))
+        return nt.group_kind(self.groups.get(text, "")) or nt.guess_kind(text)
+
+    def apply_sort(self):
+        """Order the loaded pages (and group them by status) while keeping the selection on the same page."""
+        if not self.pages:
+            return
+        sid = self.pages[self.sel]["id"] if self.sel < len(self.pages) else None
+        mode = self.SORTS[self.sort_mode][0]
+        stext = lambda p: nt.prop_text(p["properties"].get(self.cfg["status_property"])).lower()
+        if mode == "title":
+            self.pages.sort(key=lambda p: nt.page_title(p).lower())
+        elif mode == "status":
+            self.pages.sort(key=lambda p: (self.KIND_RANK[self.status_kind(p)], stext(p)))
+        else:
+            self.pages.sort(key=lambda p: p.get("last_edited_time") or "", reverse=True)
+        if self.group:  # stable: keeps the chosen order inside each group
+            self.pages.sort(key=lambda p: (self.KIND_RANK[self.status_kind(p)], stext(p)))
+        if sid:
+            self.sel = next((i for i, p in enumerate(self.pages) if p["id"] == sid), 0)
+
+    def build_display(self):
+        """Rows to draw: ("h", header text) between groups, ("r", index into self.pages) for pages."""
+        counts = {}
+        for p in self.pages:
+            k = nt.prop_text(p["properties"].get(self.cfg["status_property"])) or "No status"
+            counts[k] = counts.get(k, 0) + 1
+        out, last = [], None
+        for i, p in enumerate(self.pages):
+            if self.group:
+                k = nt.prop_text(p["properties"].get(self.cfg["status_property"])) or "No status"
+                if k != last:
+                    out.append(("h", "%s %s (%d)" % (self.MARK[self.status_kind(p)], k, counts[k])))
+                    last = k
+            out.append(("r", i))
+        return out
+
+    def load_seen(self):
+        try:
+            with open(state_file("seen.json"), encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def save_seen(self):
+        try:
+            os.makedirs(os.path.dirname(state_file("x")), exist_ok=True)
+            items = sorted(self.seen.items(), key=lambda kv: kv[1], reverse=True)[:3000]
+            with open(state_file("seen.json"), "w", encoding="utf-8") as f:
+                json.dump(dict(items), f)
+        except OSError:
+            pass
+
+    def baseline_seen(self):
+        """Pages met for the first time count as seen, so only later edits show the unread dot."""
+        new = False
+        for p in self.pages:
+            if p["id"] not in self.seen and p.get("last_edited_time"):
+                self.seen[p["id"]] = p["last_edited_time"]
+                new = True
+        if new:
+            self.save_seen()
+
+    def unread(self, page):
+        edited = page.get("last_edited_time") or ""
+        return bool(edited) and edited > self.seen.get(page["id"], edited)
+
+    def mark_seen(self, page):
+        if page.get("last_edited_time") and self.seen.get(page["id"]) != page["last_edited_time"]:
+            self.seen[page["id"]] = page["last_edited_time"]
+            self.save_seen()
+
+    # ------------------------------------------------------------ preview pane and auto-refresh
+    PREVIEW_MIN_WIDTH = 120
+
+    def wide(self):
+        return self.scr.getmaxyx()[1] >= self.PREVIEW_MIN_WIDTH
+
+    def maybe_preview(self):
+        """In a wide pane, fetch the body of the selected page once the selection has rested for a moment."""
+        if self.job or self.detail or not self.pages or not self.wide() or self.sel >= len(self.pages):
+            return
+        page = self.pages[self.sel]
+        if page["id"] in self.cache or time.time() - self.sel_changed < 0.3:
+            return
+        pid = page["id"]
+
+        def done(lines):
+            self.cache[pid] = lines
+
+        self.start_job("", lambda: self.client.body_lines(pid), done, "preview")
+
+    def auto_refresh(self):
+        """Quietly reload the list every minute; rows already on screen are updated in place."""
+        if self.job or self.detail or not self.pages or time.time() - self.last_refresh < 60:
+            return
+        self.last_refresh = time.time()
+
+        def work():
+            schema = self.client.discover()
+            body = self.build_list_query(schema)
+            return schema, body, self.client.query(body)
+
+        def done(r):
+            schema, body, res = r
+            fresh = res.get("results", [])
+            ids = {p["id"] for p in fresh}
+            sid = self.pages[self.sel]["id"] if self.sel < len(self.pages) else None
+            extra = [p for p in self.pages if p["id"] not in ids]
+            self.pages = fresh + extra
+            if len(extra) == 0:
+                self.has_more, self.cursor = bool(res.get("has_more")), res.get("cursor")
+            self.groups = nt.status_groups(schema, self.cfg["status_property"])
+            self.apply_sort()
+            if sid:
+                self.sel = next((i for i, p in enumerate(self.pages) if p["id"] == sid), self.sel)
+            self.baseline_seen()
+
+        self.start_job("", work, done, "silent")
 
     # ------------------------------------------------------------ drawing
     MARK = {"todo": "○", "progress": "◐", "done": "✓", "": "●"}
@@ -227,7 +364,7 @@ class App:
         """(marker, text, color attr) for the status property of a page."""
         prop = self.cfg["status_property"]
         text = nt.prop_text(page["properties"].get(prop))
-        kind = nt.group_kind(self.groups.get(text, "")) or nt.guess_kind(text)
+        kind = self.status_kind(page)
         return self.MARK[kind], text, self.cp(self.PAIR[kind])
 
     def rule(self, y, w):
@@ -245,54 +382,108 @@ class App:
                              self.cp(4) | curses.A_BOLD if i == self.fidx and self.colors
                              else curses.A_REVERSE if i == self.fidx else curses.A_DIM)
             x += len(label) + 1
-        right = "%s%d%s pages%s " % (self.spin() + " " if self.visible_job() else "", len(self.pages), "+" if self.has_more else "", ' · / "%s"' % self.query if self.query else "")
+        extras = ""
+        if self.query:
+            extras += ' · / "%s"' % self.query
+        if self.sort_mode:
+            extras += " · sort: %s" % self.SORTS[self.sort_mode][1]
+        if self.group:
+            extras += " · grouped"
+        right = "%s%d%s pages%s " % (self.spin() + " " if self.visible_job() else "", len(self.pages), "+" if self.has_more else "", extras)
         if x + len(right) < w:
             self.scr.addnstr(0, w - 1 - len(right), right, len(right), curses.A_DIM)
+
+    BODY_ATTR = {"rule": curses.A_DIM, "quote": curses.A_DIM, "fence": curses.A_DIM}
+
+    def draw_preview(self, x0, width, top, bottom):
+        """Right-hand pane of a wide layout: the selected page's title, facts and body."""
+        if not self.pages or self.sel >= len(self.pages) or width < 20:
+            return
+        p = self.pages[self.sel]
+        y = top
+        for line in textwrap.wrap(nt.clean(nt.page_title(p)), width)[:3]:
+            self.scr.addnstr(y, x0, line, width, curses.A_BOLD)
+            y += 1
+        extra = [c for c in self.cfg["columns"] if c != self.cfg["status_property"]]
+        mark, text, attr = self.status_cell(p)
+        facts = [("%s %s" % (mark, text), attr)] + [(nt.prop_text(p["properties"].get(c)), curses.A_DIM) for c in extra]
+        x = x0
+        for f, a_ in [f for f in facts if f[0].strip()] + [("edited " + nt.relative_time(p.get("last_edited_time")), curses.A_DIM)]:
+            if x + len(f) >= x0 + width:
+                break
+            self.scr.addnstr(y, x, f, width, a_)
+            x += len(f) + 3
+        y += 1
+        self.scr.addnstr(y, x0, "─" * width, width, curses.A_DIM)
+        y += 1
+        body = self.cache.get(p["id"])
+        if body is None:
+            self.scr.addnstr(y, x0, "Loading…", width, curses.A_DIM)
+            return
+        kinds = nt.style_lines(body)
+        for l, kind in zip(body, kinds):
+            attr = {"heading": curses.A_BOLD | curses.A_UNDERLINE, "code": self.cp(2), "done": self.cp(3)}.get(kind, self.BODY_ATTR.get(kind, 0))
+            text = nt.display_line(l, kind)
+            for piece in (textwrap.wrap(text, width) or [""]):
+                if y >= bottom:
+                    return
+                self.scr.addnstr(y, x0, piece, width, attr)
+                y += 1
 
     def draw_list(self):
         h, w = self.scr.getmaxyx()
         self.scr.erase()
         self.draw_tabs(w)
         self.rule(1, w)
+        wide = w >= self.PREVIEW_MIN_WIDTH
+        tw_total = max(70, int(w * 0.56)) if wide else w  # width of the table; the rest is the preview pane
         # Columns right of the title, in priority order: status, other columns, edited.
         # They are dropped from the right until the title has at least 20 columns.
         extra = [c for c in self.cfg["columns"] if c != self.cfg["status_property"]]
         cols = [("STATUS", 14)] + [(c.upper(), min(14, max(len(c), 6))) for c in extra] \
             + ([("AGENT", 12)] if any(p["id"] in self.delegations for p in self.pages) else []) + [("EDITED", 6)]
-        while cols and w - 4 - sum(cw + 2 for _, cw in cols) < 20:
+        while cols and tw_total - 4 - sum(cw + 2 for _, cw in cols) < 20:
             cols.pop()
-        tw = max(10, w - 4 - sum(cw + 2 for _, cw in cols))
+        tw = max(10, tw_total - 4 - sum(cw + 2 for _, cw in cols))
         head = "  " + "TITLE".ljust(tw) + "".join("  " + n.ljust(cw) for n, cw in cols)
-        self.scr.addnstr(2, 0, head, w - 1, curses.A_DIM | curses.A_BOLD)
-        peek = 4 if h >= 20 else 0  # the selected page in full, since titles get clipped in the table
+        self.scr.addnstr(2, 0, head, tw_total - 1, curses.A_DIM | curses.A_BOLD)
+        peek = 4 if (h >= 20 and not wide) else 0  # the selected page in full, since titles get clipped in the table
         rows = h - 6 - peek
-        if self.sel < self.top:
-            self.top = self.sel
-        if self.sel >= self.top + rows:
-            self.top = self.sel - rows + 1
+        disp = self.build_display()
+        sel_d = next((j for j, (t, i) in enumerate(disp) if t == "r" and i == self.sel), 0)
+        if sel_d < self.top:
+            self.top = max(0, sel_d - (1 if sel_d > 0 and disp[sel_d - 1][0] == "h" else 0))
+        if sel_d >= self.top + rows:
+            self.top = sel_d - rows + 1
         stale = bool(self.job and self.job["kind"] == "list" and self.pages)
-        show_agent = any(p["id"] in self.delegations for p in self.pages)
-        for r, p in enumerate(self.pages[self.top:self.top + rows]):
-            y, on = 3 + r, self.top + r == self.sel
+        for r, (kind, i) in enumerate(disp[self.top:self.top + rows]):
+            y = 3 + r
+            if kind == "h":
+                self.scr.addnstr(y, 2, i, tw_total - 3, curses.A_BOLD | curses.A_DIM)
+                continue
+            pg = self.pages[i]
+            on = i == self.sel
             base = curses.A_REVERSE if on else (curses.A_DIM if stale else 0)
-            self.scr.addnstr(y, 0, " " * (w - 1), w - 1, base)
+            self.scr.addnstr(y, 0, " " * (tw_total - 1), tw_total - 1, base)
             self.scr.addnstr(y, 0, "▌" if on else " ", 1, base | self.cp(2))
-            self.scr.addstr(y, 2, nt.clip(nt.page_title(p), tw), base | (curses.A_BOLD if on else 0))
+            if self.unread(pg):
+                self.scr.addnstr(y, 1, "•", 1, base | self.cp(3) | curses.A_BOLD)
+            self.scr.addstr(y, 2, nt.clip(nt.page_title(pg), tw), base | (curses.A_BOLD if on else 0))
             x = 2 + tw
             for n, cw in cols:
                 x += 2
                 if n == "STATUS":
-                    mark, text, attr = self.status_cell(p)
+                    mark, text, attr = self.status_cell(pg)
                     self.scr.addstr(y, x, nt.clip("%s %s" % (mark, text), cw), base | attr)
                 elif n == "EDITED":
-                    self.scr.addnstr(y, x, nt.relative_time(p.get("last_edited_time")), cw, base | curses.A_DIM)
+                    self.scr.addnstr(y, x, nt.relative_time(pg.get("last_edited_time")), cw, base | curses.A_DIM)
                 elif n == "AGENT":
-                    cell = self.agent_cell(p)
+                    cell = self.agent_cell(pg)
                     if cell:
                         self.scr.addstr(y, x, nt.clip(cell[0], cw), base | cell[1])
                 else:
                     key = next(c for c in extra if c.upper() == n)
-                    self.scr.addstr(y, x, nt.clip(nt.prop_text(p["properties"].get(key)), cw), base)
+                    self.scr.addstr(y, x, nt.clip(nt.prop_text(pg["properties"].get(key)), cw), base)
                 x += cw
         if not self.pages and self.job:
             for r in range(min(rows, 8)):  # skeleton rows while the first page loads
@@ -300,7 +491,11 @@ class App:
                 self.scr.addnstr(3 + r, 2, bar, tw, curses.A_DIM)
                 self.scr.addnstr(3 + r, 2 + tw + 2, "░░░░░░░░", 8, curses.A_DIM)
         elif not self.pages:
-            self.scr.addnstr(4, 2, "No pages match this filter.", w - 3, curses.A_DIM)
+            self.scr.addnstr(4, 2, "No pages match this filter.", tw_total - 3, curses.A_DIM)
+        if wide:
+            for y in range(2, h - 3):
+                self.scr.addnstr(y, tw_total, "│", 1, curses.A_DIM)
+            self.draw_preview(tw_total + 2, w - tw_total - 3, 3, h - 3)
         if peek and self.pages:
             self.rule(h - 3 - peek, w)
             p = self.pages[self.sel]
@@ -314,7 +509,8 @@ class App:
                 facts.append("agent " + cell[0])
             self.scr.addnstr(h - 4, 2, "  ·  ".join(facts), w - 3, curses.A_DIM)
         self.rule(h - 3, w)
-        self.footer([("⏎", "open"), ("s", "status"), ("d", "delegate"), ("f", "filters"), ("/", "search"), ("?", "more")])
+        self.footer([("⏎", "open"), ("s", "status"), ("d", "delegate"), ("f", "filters"), ("/", "search"),
+                     ("O", "sort"), ("g", "group"), ("?", "more")])
 
     def draw_detail(self):
         h, w = self.scr.getmaxyx()
@@ -1249,13 +1445,18 @@ class App:
                 if self.want_quit:
                     return
             self.poll_job()
+            cur = self.pages[self.sel]["id"] if self.pages and self.sel < len(self.pages) else None
+            if cur != self.sel_id:
+                self.sel_id, self.sel_changed = cur, time.time()
+            self.maybe_preview()
+            self.auto_refresh()
             self.poll_agents()
             if self.finished:
                 self.draw_list() if not self.detail else self.draw_detail()
                 self.guard(self.offer_review)
             (self.draw_detail if self.detail else self.draw_list)()
             self.scr.refresh()
-            self.scr.timeout(100 if self.job else 1000 if any(not d.get("done") for d in self.delegations.values()) else -1)
+            self.scr.timeout(100 if self.job else 500 if self.wide() else 1000)
             k = self.scr.getch()
             if k == -1 or k == curses.KEY_RESIZE:
                 continue
@@ -1307,6 +1508,14 @@ class App:
             self.guard(self.pick_filter, k - ord("1"))
         elif k == ord("/"):
             self.guard(self.search)
+        elif k == ord("O"):
+            self.sort_mode = (self.sort_mode + 1) % len(self.SORTS)
+            self.apply_sort()
+            self.msg = "sorted by %s" % self.SORTS[self.sort_mode][1]
+        elif k == ord("g"):
+            self.group = not self.group
+            self.apply_sort()
+            self.msg = "grouped by status" if self.group else "ungrouped"
         elif k == ord("r"):
             self.refresh_async("Refreshing…")
         elif k == ord("R"):
