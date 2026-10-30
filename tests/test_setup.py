@@ -38,7 +38,13 @@ class Discovery(unittest.TestCase):
             {"property": "State", "status": {"does_not_equal": "Done"}},
             {"property": "State", "status": {"does_not_equal": "Shipped"}}]})
 
-    def test_open_filter_none_for_select_or_missing(self):
+    def test_open_filter_for_plain_select_guesses_finished_options(self):
+        schema = {"properties": {"Status": {"type": "select", "select": {"options": [
+            {"name": "To Do"}, {"name": "In Progress"}, {"name": "Finished"}]}}}}
+        self.assertEqual(setup.open_filter(schema, "Status"),
+                         {"property": "Status", "select": {"does_not_equal": "Finished"}})
+
+    def test_open_filter_none_for_select_without_finished_or_missing(self):
         self.assertIsNone(setup.open_filter(SCHEMA, "Priority"))
         self.assertIsNone(setup.open_filter(SCHEMA, "Nope"))
 

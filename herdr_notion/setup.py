@@ -64,18 +64,22 @@ def column_candidates(schema, status_prop, limit=2):
 
 
 def open_filter(schema, status_prop):
-    """Filter for 'not finished' pages, built from the status property's
-    'Complete' group. None when the property has no such group."""
+    """Filter for 'not finished' pages. A Notion status property uses its
+    'Complete' group; a plain select has no groups, so options named like
+    done/closed/shipped count as finished. None when nothing is finished."""
     p = (schema.get("properties") or {}).get(status_prop) or {}
-    if p.get("type") != "status":
+    kind = p.get("type")
+    if kind not in ("status", "select"):
         return None
-    st = p["status"]
-    names = [o["name"] for o in st.get("options", [])]
-    done = [n for n, g in nt.status_groups(schema, status_prop).items()
-            if nt.group_kind(g) == "done" and n in names]
+    names = [o["name"] for o in p[kind].get("options", [])]
+    if kind == "status":
+        done = [n for n, g in nt.status_groups(schema, status_prop).items()
+                if nt.group_kind(g) == "done" and n in names]
+    else:
+        done = [n for n in names if nt.guess_kind(n) == "done"]
     if not done:
         return None
-    conds = [{"property": status_prop, "status": {"does_not_equal": n}} for n in done]
+    conds = [{"property": status_prop, kind: {"does_not_equal": n}} for n in done]
     return conds[0] if len(conds) == 1 else {"and": conds}
 
 
