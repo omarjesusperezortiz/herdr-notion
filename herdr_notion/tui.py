@@ -614,13 +614,22 @@ class App:
         home = os.path.expanduser("~")
         return "~" + path[len(home):] if path.startswith(home) else path
 
+    LOCKED_MENU = ["Sign in with the browser", "Quit"]
+
     def connection(self, reason=""):
-        """Connection screen: status panel plus a menu. Opened with S, and by itself on a connection problem."""
+        """Connection screen: status panel plus a menu. Opened with S, and by itself on a connection problem.
+        While nobody is signed in it only offers to sign in or quit: the pages stay out of reach."""
         sel = 0
         self.reconnect = ""
-        self.busy("Checking the connection…")
-        status = self.check_connection()
+        locked = not oauth.load()
+        if not locked:
+            self.busy("Checking the connection…")
+            status = self.check_connection()
+        else:
+            status = {"who": "not signed in", "signed_in": False, "db": "", "db_ok": False, "login": None}
+            reason = reason or "You are signed out. Sign in to see your pages."
         while True:
+            menu = self.LOCKED_MENU if locked else self.MENU
             h, w = self.scr.getmaxyx()
             self.scr.erase()
             ok = status["signed_in"] and status["db_ok"]
@@ -636,7 +645,7 @@ class App:
                 ("Config:", self.tilde(cfgmod.config_path())), ("", None)]
             y = 1
             for label, value in rows:
-                if y >= h - len(self.MENU) - 3:
+                if y >= h - len(menu) - 3:
                     break
                 if value is None:
                     self.scr.addnstr(y, 2, label, w - 4, curses.A_BOLD)
@@ -644,31 +653,44 @@ class App:
                     self.scr.addnstr(y, 2, label.ljust(18), 18, curses.A_BOLD)
                     self.scr.addnstr(y, 20, value, max(w - 22, 1))
                 y += 1
-            for i, item in enumerate(self.MENU):
+            for i, item in enumerate(menu):
                 line = "%s %d. %s" % ("❯" if i == sel else " ", i + 1, item)
                 self.scr.addnstr(y + i, 2, line, w - 4, curses.A_REVERSE if i == sel else 0)
-            self.scr.addnstr(min(y + len(self.MENU) + 1, h - 1), 2, "↑↓ move · Enter or 1-%d choose · Esc close" % len(self.MENU), w - 4, curses.A_DIM)
+            hint = "↑↓ move · Enter or 1-%d choose · Esc %s" % (len(menu), "quits" if locked else "close")
+            self.scr.addnstr(min(y + len(menu) + 1, h - 1), 2, hint, w - 4, curses.A_DIM)
             self.scr.refresh()
             k = self.scr.getch()
             if k in (27, ord("q")):
-                if not ok:
+                if locked:
+                    self.want_quit = True
+                elif not ok:
                     self.msg = "not connected: press S to fix it"
                 return
             if k in (curses.KEY_DOWN, ord("j")):
-                sel = min(sel + 1, len(self.MENU) - 1)
+                sel = min(sel + 1, len(menu) - 1)
                 continue
             if k in (curses.KEY_UP, ord("k")):
                 sel = max(sel - 1, 0)
                 continue
-            if ord("1") <= k <= ord("0") + len(self.MENU):
+            if ord("1") <= k <= ord("0") + len(menu):
                 sel = k - ord("1")
             elif k not in (10, 13, curses.KEY_ENTER):
                 continue
             self.msg = ""
+            if locked:
+                if sel == 1:
+                    self.want_quit = True
+                    return
+                self.guard(self.sign_in)
+                if oauth.load():
+                    self.refresh_async("Loading…")
+                    return
+                reason = self.msg if self.msg else reason
+                continue
             action = (self.sign_in, self.change_database, self.change_status_property, self.reset_filters,
                       self.clear_sign_in, lambda: None)[sel]
             self.guard(action)
-            if self.want_quit or (sel == 4 and self.msg == "signed in again"):
+            if self.want_quit or (sel == 4 and (not oauth.load() or self.msg == "signed in again")):
                 return
             reason = self.msg if self.msg and self.connection_problem(self.msg) else ""
             self.reconnect = ""
@@ -709,17 +731,12 @@ class App:
             self.msg = "signed in again"
 
     def require_sign_in(self, text):
-        """The pages are only shown while signed in: ask to sign in, or quit. Returns True once signed in."""
+        """The pages are only shown while signed in: otherwise the connection screen opens, locked to
+        'sign in' or 'quit'. Returns True once signed in."""
         while not oauth.load():
-            self.onboarding = True
-            try:
-                k = self.onboard(1, [text, "", "Press Enter to sign in (any account or workspace). Esc quits."])
-            finally:
-                self.onboarding = False
-            if k in (27, ord("q")):
-                self.want_quit = True
+            self.connection(text)
+            if self.want_quit:
                 return False
-            self.guard(self.sign_in)
         self.refresh_async("Loading…")
         return True
 
