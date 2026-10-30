@@ -987,6 +987,16 @@ class App:
         '    ▀███▄▄▄▄▄▄▄▄▄▄▄▄▄███████████████',
         '      ▀████████████▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
     ]
+    CUBE_TINY = [
+        '▄▄██▀▀▀▀▀▀▀▀█▄',
+        '██▄▄▄▄▄▄▄▄▄▄▄██▄',
+        '███▀       ▄▄  █',
+        '███  ▀███  ██  █',
+        '███   █▀██▄██  █',
+        '███   █  ▀███  █',
+        '▀██   ▀▀  ▀▀▀  █',
+        '  ▀█▄▄▄▄███████▀',
+    ]
     CUBE_SMALL = [
         '▄▄▄▄▄▄▄▄████████▀█▄▄',
         '███                ▀█▄▄',
@@ -1006,7 +1016,8 @@ class App:
         """The Notion cube appears row by row, then 'Notion with herdr' and what is loading."""
         h, w = self.scr.getmaxyx()
         self.scr.erase()
-        art = self.CUBE_LARGE if h >= 23 and w >= 40 else self.CUBE_SMALL if h >= 17 and w >= 28 else []
+        art = (self.CUBE_LARGE if h >= 23 and w >= 40 else self.CUBE_SMALL if h >= 17 and w >= 28
+               else self.CUBE_TINY if h >= 12 and w >= 20 else [])
         top = max(0, (h - (len(art) + 4)) // 2) if art else h // 2 - 1
         shown = min(len(art), int(t / 0.045) + 1)
         width = max((len(r) for r in art), default=0)
