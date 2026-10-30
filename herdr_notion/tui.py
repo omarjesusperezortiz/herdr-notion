@@ -428,6 +428,36 @@ class App:
         finally:
             curses.curs_set(0)
 
+    def ask_paste(self, label):
+        """Input for a pasted address: a paste that wraps over several lines is read as one piece
+        (line breaks are dropped), and it is submitted once nothing more arrives. Esc cancels."""
+        buf, pending = "", False
+        curses.curs_set(1)
+        try:
+            while True:
+                h, w = self.scr.getmaxyx()
+                shown = buf[-(w - len(label) - 2):] if len(buf) > w - len(label) - 2 else buf
+                self.scr.addnstr(h - 1, 0, (label + shown).ljust(w - 1), w - 1)
+                self.scr.move(h - 1, min(len(label) + len(shown), w - 1))
+                self.scr.timeout(300 if pending else -1)
+                try:
+                    k = self.scr.get_wch()
+                except curses.error:  # silence after a line break: the paste is complete
+                    return buf
+                if k == "\x1b":
+                    return None
+                if k in ("\n", "\r"):
+                    pending = bool(buf)
+                    continue
+                pending = False
+                if k in ("\x7f", "\b") or k == curses.KEY_BACKSPACE:
+                    buf = buf[:-1]
+                elif isinstance(k, str) and k.isprintable() and not k.isspace():
+                    buf += k
+        finally:
+            self.scr.timeout(-1)
+            curses.curs_set(0)
+
     def confirm(self, text):
         h, w = self.scr.getmaxyx()
         self.scr.addnstr(h - 1, 0, (text + " [y/N]").ljust(w - 1), w - 1, curses.A_BOLD)
@@ -737,7 +767,7 @@ class App:
             if self.want_quit:
                 return False
         self.refresh_async("Loading your pages…")
-        self.splash()
+        self.splash()  # plays again after signing in
         return True
 
     def settings(self):
@@ -816,7 +846,7 @@ class App:
                         ("Browser on another machine?", curses.A_BOLD),
                         ("   Press c to copy the full link, open it there, approve, then press p", 0),
                         ("   and paste the address the browser ends on (the page will not load).", 0), ("", 0),
-                        (note, curses.A_DIM)]
+                        (note, curses.A_BOLD if note else 0)]
                 for y, (line, attr) in enumerate(rows[:h - 3]):
                     self.scr.addnstr(1 + y, 2, line, w - 3, attr)
                     if line.strip() == flow.short:
@@ -843,12 +873,16 @@ class App:
                     else:
                         note = "no clipboard tool found; use the link above"
                 elif k == ord("p"):
-                    self.scr.timeout(-1)
-                    pasted = self.ask("address: ")
+                    pasted = self.ask_paste("address: ")
                     self.scr.timeout(300)
-                    if pasted and pasted.strip():
-                        res = flow.parse(pasted)
-                        break
+                    if pasted:
+                        got = flow.parse(pasted)
+                        if "code" in got or "error" in got:
+                            res = got
+                            break
+                        note = ("That is the sign-in link. Open it, approve, then paste the address the browser ends on."
+                                if "code_challenge" in pasted else
+                                "No code in that address. Paste the whole address the browser ended on (it starts with http://127.0.0.1).")
             else:
                 flow.close()
                 raise oauth.OAuthError("timed out waiting for the browser sign-in")
@@ -1139,7 +1173,11 @@ class App:
         except (cfgmod.ConfigError, nt.NotionError) as e:
             self.show([str(e), "", "Press any key to quit."])
             return
-        if not self.require_sign_in("Sign in to Notion to see your pages."):
+        signed_in = bool(oauth.load())
+        if signed_in:
+            self.refresh_async("Loading your pages…")
+        self.splash()  # the intro always plays first, loading in the background when there is a login
+        if not signed_in and not self.require_sign_in("Sign in to Notion to see your pages."):
             return
         while True:
             self.scr.timeout(-1)  # screens opened from here (connection, review offer) read keys in blocking mode
