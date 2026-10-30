@@ -1,5 +1,6 @@
 """curses TUI: list, detail, popups. All network calls are synchronous."""
 import curses
+import json
 import os
 import re
 import shutil
@@ -38,6 +39,9 @@ class App:
         self.job_seq = 0
         self.onboarding = False
         self.picked_title, self.picked_tabs = "", []
+        self.delegations = self.load_delegations()  # page id -> {"pane", "agent", "title", "seen_working", "done"}
+        self.finished = []  # page ids whose agent just went idle: the main loop offers to move them to review
+        self.next_agent_poll = 0
         self.fidx = 0
         self.query = ""
         self.pages = []
@@ -88,6 +92,9 @@ class App:
 
     # ------------------------------------------------------------ background loading
     SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def visible_job(self):
+        return bool(self.job and self.job["kind"] != "agents")
 
     def spin(self):
         return self.SPINNER[int(time.time() * 10) % len(self.SPINNER)]
@@ -237,7 +244,7 @@ class App:
                              self.cp(4) | curses.A_BOLD if i == self.fidx and self.colors
                              else curses.A_REVERSE if i == self.fidx else curses.A_DIM)
             x += len(label) + 1
-        right = "%s%d%s pages%s " % (self.spin() + " " if self.job else "", len(self.pages), "+" if self.has_more else "", ' · / "%s"' % self.query if self.query else "")
+        right = "%s%d%s pages%s " % (self.spin() + " " if self.visible_job() else "", len(self.pages), "+" if self.has_more else "", ' · / "%s"' % self.query if self.query else "")
         if x + len(right) < w:
             self.scr.addnstr(0, w - 1 - len(right), right, len(right), curses.A_DIM)
 
@@ -249,7 +256,8 @@ class App:
         # Columns right of the title, in priority order: status, other columns, edited.
         # They are dropped from the right until the title has at least 20 columns.
         extra = [c for c in self.cfg["columns"] if c != self.cfg["status_property"]]
-        cols = [("STATUS", 14)] + [(c.upper(), min(14, max(len(c), 6))) for c in extra] + [("EDITED", 6)]
+        cols = [("STATUS", 14)] + [(c.upper(), min(14, max(len(c), 6))) for c in extra] \
+            + ([("AGENT", 12)] if any(p["id"] in self.delegations for p in self.pages) else []) + [("EDITED", 6)]
         while cols and w - 4 - sum(cw + 2 for _, cw in cols) < 20:
             cols.pop()
         tw = max(10, w - 4 - sum(cw + 2 for _, cw in cols))
@@ -262,6 +270,7 @@ class App:
         if self.sel >= self.top + rows:
             self.top = self.sel - rows + 1
         stale = bool(self.job and self.job["kind"] == "list" and self.pages)
+        show_agent = any(p["id"] in self.delegations for p in self.pages)
         for r, p in enumerate(self.pages[self.top:self.top + rows]):
             y, on = 3 + r, self.top + r == self.sel
             base = curses.A_REVERSE if on else (curses.A_DIM if stale else 0)
@@ -276,6 +285,10 @@ class App:
                     self.scr.addstr(y, x, nt.clip("%s %s" % (mark, text), cw), base | attr)
                 elif n == "EDITED":
                     self.scr.addnstr(y, x, nt.relative_time(p.get("last_edited_time")), cw, base | curses.A_DIM)
+                elif n == "AGENT":
+                    cell = self.agent_cell(p)
+                    if cell:
+                        self.scr.addstr(y, x, nt.clip(cell[0], cw), base | cell[1])
                 else:
                     key = next(c for c in extra if c.upper() == n)
                     self.scr.addstr(y, x, nt.clip(nt.prop_text(p["properties"].get(key)), cw), base)
@@ -295,6 +308,9 @@ class App:
             mark, text, attr = self.status_cell(p)
             facts = [text] + [nt.prop_text(p["properties"].get(c)) for c in extra]
             facts = [f for f in facts if f] + ["edited " + nt.relative_time(p.get("last_edited_time"))]
+            cell = self.agent_cell(p)
+            if cell:
+                facts.append("agent " + cell[0])
             self.scr.addnstr(h - 4, 2, "  ·  ".join(facts), w - 3, curses.A_DIM)
         self.rule(h - 3, w)
         self.footer([("⏎", "open"), ("s", "status"), ("d", "delegate"), ("f", "filters"), ("/", "search"), ("?", "more")])
@@ -346,7 +362,7 @@ class App:
         if len(text) < len(nt.fit_hints(hints, w - 2)):
             ctx = ""
             text = nt.fit_hints(hints, w - 2)
-        note = "%s %s" % (self.spin(), self.job["label"]) if self.job else self.msg
+        note = "%s %s" % (self.spin(), self.job["label"]) if self.visible_job() else self.msg
         if note:
             self.scr.addnstr(h - 2, 1, note, w - 2, curses.A_BOLD if not self.job else curses.A_DIM)
             hint_row = h - 1
@@ -454,6 +470,88 @@ class App:
         dcfg = self.cfg["delegate"]
         return page, nt.render_prompt(dcfg["prompt"], page, body, dcfg["max_body_chars"])
 
+    # ------------------------------------------------------------ delegation tracking
+    def load_delegations(self):
+        try:
+            with open(state_file("delegations.json"), encoding="utf-8") as f:
+                data = json.load(f)
+            return {k: v for k, v in data.items() if not v.get("done")}
+        except (OSError, ValueError):
+            return {}
+
+    def save_delegations(self):
+        try:
+            os.makedirs(os.path.dirname(state_file("x")), exist_ok=True)
+            with open(state_file("delegations.json"), "w", encoding="utf-8") as f:
+                json.dump(self.delegations, f)
+        except OSError:
+            pass
+
+    def track(self, page, pane, agent):
+        self.delegations[page["id"]] = {"pane": pane, "agent": agent, "title": nt.page_title(page),
+                                         "seen_working": False, "done": False, "status": "sent"}
+        self.next_agent_poll = 0
+        self.save_delegations()
+
+    def agent_cell(self, page):
+        """(text, attr) for the AGENT column of a page, or None when it was never delegated."""
+        d = self.delegations.get(page["id"])
+        if not d:
+            return None
+        if d.get("done"):
+            return "✔ %s" % d["agent"], self.cp(3)
+        working = d.get("status") == "working"
+        return "%s %s" % ("◉" if working else "○", d["agent"]), self.cp(2) if working else curses.A_DIM
+
+    def poll_agents(self):
+        """Every few seconds ask herdr how the delegated agents are doing (never while something else loads)."""
+        active = [d for d in self.delegations.values() if not d.get("done")]
+        if not active or self.job or time.time() < self.next_agent_poll:
+            return
+        self.next_agent_poll = time.time() + 5
+        self.start_job("", dg.list_agents, self.on_agents, "agents")
+
+    def on_agents(self, agents):
+        status = {a["pane_id"]: a["status"] for a in agents}
+        for pid, d in self.delegations.items():
+            if d.get("done"):
+                continue
+            now = status.get(d["pane"])
+            if now is None:  # the pane is gone
+                d["done"] = True
+                continue
+            d["status"] = now
+            if now == "working":
+                d["seen_working"] = True
+            elif d["seen_working"] and now in ("idle", "done"):
+                d["done"] = True
+                self.finished.append(pid)
+        self.save_delegations()
+
+    def offer_review(self):
+        """The agent finished a delegated page: offer to move it on (to the option named like 'review')."""
+        pid = self.finished.pop(0)
+        d = self.delegations.get(pid)
+        schema = self.client.discover()
+        kind, options = nt.status_options(schema, self.cfg["status_property"])
+        target = next((o for o in options if "review" in o.lower()), "")
+        page = next((p for p in self.pages if p["id"] == pid), None)
+        if not d or not options:
+            return
+        if not target:
+            i = self.popup("%s finished. Move it to" % d["agent"], options + ["leave as it is"])
+            if i is None or i >= len(options):
+                return
+            target = options[i]
+        elif not self.confirm("%s finished '%s'. Set %s to '%s'?" % (d["agent"], nt.clip(d["title"], 30), self.cfg["status_property"], target)):
+            return
+        self.busy("Updating…")
+        updated = self.client.set_status(pid, self.cfg["status_property"], kind, target)
+        for n, p in enumerate(self.pages):
+            if p["id"] == pid:
+                self.pages[n] = updated
+        self.msg = "%s set to %s" % (self.cfg["status_property"], target)
+
     def delegate(self):
         page, prompt = self.build_prompt()
         if not page:
@@ -469,6 +567,7 @@ class App:
         if i < len(agents):
             self.busy("Sending prompt…")
             dg.send_prompt(agents[i]["pane_id"], prompt)
+            self.track(page, agents[i]["pane_id"], agents[i]["name"] or agents[i]["agent"])
             self.msg = "sent to %s" % agents[i]["name"]
             return
         kinds = dcfg["agents"]
@@ -487,6 +586,7 @@ class App:
         pane = dg.start_agent(kinds[j]["command"], cwd, nt.page_title(page)[:30], dcfg,
                               os.environ.get("HERDR_WORKSPACE_ID"))
         dg.send_prompt(pane, prompt)
+        self.track(page, pane, kinds[j]["name"])
         self.msg = "started %s and sent prompt" % kinds[j]["name"]
 
     def check_connection(self):
@@ -994,12 +1094,17 @@ class App:
         self.refresh_async("Loading your pages…")
         self.splash()
         while True:
+            self.scr.timeout(-1)  # screens opened from here (connection, review offer) read keys in blocking mode
             if self.reconnect:
                 self.connect_screen()
             self.poll_job()
+            self.poll_agents()
+            if self.finished:
+                self.draw_list() if not self.detail else self.draw_detail()
+                self.guard(self.offer_review)
             (self.draw_detail if self.detail else self.draw_list)()
             self.scr.refresh()
-            self.scr.timeout(100 if self.job else -1)
+            self.scr.timeout(100 if self.job else 1000 if any(not d.get("done") for d in self.delegations.values()) else -1)
             k = self.scr.getch()
             if k == -1 or k == curses.KEY_RESIZE:
                 continue
@@ -1081,6 +1186,11 @@ class App:
         else:
             self.common_key(k)
         return True
+
+
+def state_file(name):
+    d = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.dirname(cfgmod.config_path())
+    return os.path.join(d, name)
 
 
 def log_path():

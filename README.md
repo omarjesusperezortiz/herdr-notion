@@ -126,6 +126,11 @@ The plugin never edits Notion on its own: the only write is the status change, a
 
 ### Delegate
 
+After you send a page, its row gets an **AGENT** cell (`◉ claude` while it works, `✔` when it is done)
+and the plugin watches the agent through `herdr agent list`. When the agent goes idle after having worked,
+it asks whether to set the page's status to the option named like *review* (or lets you pick one). Nothing is
+written without your `y`.
+
 Running agents come from `herdr agent list`; the prompt is delivered with
 `herdr agent prompt <pane> <text>`. **+ start new agent…** asks for an agent
 type and a working directory, creates a tab (`herdr tab create`), starts the
