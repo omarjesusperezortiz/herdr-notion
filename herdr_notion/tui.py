@@ -683,7 +683,6 @@ class App:
                     return
                 self.guard(self.sign_in)
                 if oauth.load():
-                    self.refresh_async("Loading…")
                     return
                 reason = self.msg if self.msg else reason
                 continue
@@ -737,7 +736,8 @@ class App:
             self.connection(text)
             if self.want_quit:
                 return False
-        self.refresh_async("Loading…")
+        self.refresh_async("Loading your pages…")
+        self.splash()
         return True
 
     def settings(self):
@@ -974,20 +974,20 @@ class App:
         self.scr.erase()
         art = self.CUBE_LARGE if h >= 23 and w >= 40 else self.CUBE_SMALL if h >= 17 and w >= 28 else []
         top = max(0, (h - (len(art) + 4)) // 2) if art else h // 2 - 1
-        shown = min(len(art), int(t / 0.03) + 1)
+        shown = min(len(art), int(t / 0.045) + 1)
         width = max((len(r) for r in art), default=0)
         for i, row in enumerate(art[:shown]):
             self.scr.addnstr(top + i, max(0, (w - width) // 2), row, w - 1, curses.A_BOLD)
         y = top + len(art) + 1
-        if t > 0.55 or not art:
+        if t > 0.95 or not art:
             name = "Notion  with  herdr"
             self.scr.addnstr(y, max(0, (w - len(name)) // 2), name, w - 1, curses.A_BOLD)
-        if t > 0.7:
+        if t > 1.1:
             line = "%s %s" % (self.spin(), self.job["label"] if self.job else "ready")
             self.scr.addnstr(y + 1, max(0, (w - len(line)) // 2), line, w - 1, curses.A_DIM)
         self.scr.refresh()
 
-    def splash(self, minimum=0.9):
+    def splash(self, minimum=1.7):
         """Show the splash while the first page loads (a key skips the wait once it has loaded)."""
         if self.scr.getmaxyx()[0] < 5:
             return
@@ -1141,8 +1141,6 @@ class App:
             return
         if not self.require_sign_in("Sign in to Notion to see your pages."):
             return
-        self.refresh_async("Loading your pages…")
-        self.splash()
         while True:
             self.scr.timeout(-1)  # screens opened from here (connection, review offer) read keys in blocking mode
             if self.want_quit:
