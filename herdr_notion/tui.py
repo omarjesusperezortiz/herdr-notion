@@ -23,7 +23,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm)"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("F", "show one status only"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm)"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("F", "show one status only"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -207,13 +207,17 @@ class App:
 
         def work():
             fresh = self.client.get_page(pid)
-            return fresh, self.cache.get(pid) or self.client.body_lines(pid)
+            try:
+                comments = self.client.comments(pid)
+            except (nt.NotionError, AttributeError):
+                comments = []
+            return fresh, self.cache.get(pid) or self.client.body_lines(pid), comments
 
         def done(r):
-            fresh, body = r
+            fresh, body, comments = r
             self.cache[pid] = body
             if self.detail and self.detail["page"]["id"] == pid:
-                self.detail = {"page": fresh, "lines": [], "body": "\n".join(body)}
+                self.detail = {"page": fresh, "lines": [], "body": "\n".join(body), "comments": comments}
 
         self.start_job("Loading page…", work, done, "detail")
 
@@ -570,7 +574,7 @@ class App:
             self.scr.addnstr(h - 4, 2, "  ·  ".join(facts), w - 3, curses.A_DIM)
         self.rule(h - 3, w)
         self.footer([("⏎", "open"), ("s", "status"), ("d", "delegate"), ("f", "filters"), ("/", "search"),
-                     ("F", "status"), ("O", "sort"), ("g", "group"), ("?", "more")])
+                     ("e", "edit"), ("n", "new"), ("?", "more")])
 
     def draw_detail(self):
         h, w = self.scr.getmaxyx()
@@ -601,6 +605,14 @@ class App:
             text = nt.display_line(l, kind)
             wrapped = [text[i:i + w - 3] for i in range(0, max(len(text), 1), max(w - 3, 1))]
             lines += [(" " + x, attr) for x in wrapped]
+        comments = self.detail.get("comments") or []
+        if comments:
+            lines += [("", 0), ("─" * (w - 1), curses.A_DIM), (" Comments (%d)" % len(comments), curses.A_BOLD)]
+            for c_ in comments:
+                head = "%s · %s" % (c_["author"], nt.relative_time(c_["when"]))
+                lines.append((" " + head, self.cp(1) | curses.A_BOLD))
+                for piece in (textwrap.wrap(c_["text"], max(w - 5, 10)) or [""]):
+                    lines.append(("   " + piece, 0))
         view = h - 5
         self.dscroll = max(0, min(self.dscroll, max(0, len(lines) - view)))
         for r, (l, attr) in enumerate(lines[self.dscroll:self.dscroll + view]):
@@ -609,7 +621,7 @@ class App:
         if len(lines) > view:
             ind = "%d%%" % min(100, 100 * (self.dscroll + view) // len(lines))
             self.scr.addnstr(h - 3, max(0, w - len(ind) - 2), ind, len(ind), curses.A_DIM)
-        self.footer([("s", "status"), ("d", "delegate"), ("o", "browser"), ("q", "back"), ("]", "next"), ("y", "copy"), ("?", "more")])
+        self.footer([("s", "status"), ("e", "edit"), ("c", "comment"), ("d", "delegate"), ("o", "browser"), ("q", "back"), ("?", "more")])
 
     def footer(self, hints):
         h, w = self.scr.getmaxyx()
@@ -761,6 +773,138 @@ class App:
             body = "\n".join(self.cache[page["id"]])
         dcfg = self.cfg["delegate"]
         return page, nt.render_prompt(dcfg["prompt"], page, body, dcfg["max_body_chars"])
+
+    # ------------------------------------------------------------ edit, comment, create, switch database
+    EDITABLE = ("select", "status", "number", "rich_text", "url", "email", "phone_number", "checkbox")
+
+    def edit_property(self):
+        """e: change one property of the selected page (asks to confirm; the write goes through Notion's MCP)."""
+        page = self.current()
+        if not page:
+            return
+        schema = self.client.discover()
+        names = [n for n, pr in schema["properties"].items() if pr["type"] in self.EDITABLE]
+        if not names:
+            self.msg = "no editable properties"
+            return
+        i = self.popup("Edit property", ["%s (%s)" % (n, schema["properties"][n]["type"]) for n in names])
+        if i is None:
+            return
+        name, kind = names[i], schema["properties"][names[i]]["type"]
+        now = nt.prop_text(page["properties"].get(name))
+        if kind in ("select", "status"):
+            opts = [o["name"] for o in schema["properties"][name][kind].get("options", [])]
+            j = self.popup("Set %s" % name, opts + (["(clear)"] if kind == "select" else []), opts.index(now) if now in opts else 0)
+            if j is None:
+                return
+            value, shown = (opts[j], opts[j]) if j < len(opts) else (None, "(empty)")
+        elif kind == "checkbox":
+            j = self.popup("Set %s" % name, ["yes", "no"])
+            if j is None:
+                return
+            value, shown = ("__YES__", "yes") if j == 0 else ("__NO__", "no")
+        else:
+            text = self.ask("%s: " % name, now)
+            if text is None:
+                return
+            if kind == "number":
+                try:
+                    value = float(text) if "." in text else int(text)
+                except ValueError:
+                    self.msg = "%r is not a number" % text
+                    return
+            else:
+                value = text
+            shown = text or "(empty)"
+        if not self.confirm("Set %s to '%s'?" % (name, nt.clip(shown, 40))):
+            self.msg = "cancelled"
+            return
+        self.busy("Updating…")
+        updated = self.client.set_property(page["id"], name, value)
+        self.replace_page(updated)
+        if self.detail:
+            self.open_page(updated)
+        self.msg = "%s set to %s" % (name, shown)
+
+    def comment(self):
+        """c (in a page): add a comment."""
+        if not self.detail:
+            return
+        text = self.ask("comment: ")
+        if not text or not text.strip():
+            return
+        if not self.confirm("Post this comment?"):
+            self.msg = "cancelled"
+            return
+        self.busy("Posting…")
+        pid = self.detail["page"]["id"]
+        self.client.add_comment(pid, text.strip())
+        self.detail["comments"] = self.client.comments(pid)
+        self.msg = "comment posted"
+
+    def new_page(self):
+        """n: create a page in this database (a title and, if you like, a status)."""
+        schema = self.client.discover()
+        title = self.ask("new page title: ")
+        if not title or not title.strip():
+            return
+        props, shown = {}, ""
+        prop = self.cfg["status_property"]
+        if prop in schema["properties"] and schema["properties"][prop]["type"] in ("status", "select"):
+            kind, opts = nt.status_options(schema, prop)
+            j = self.popup("Status of the new page", ["(Notion's default)"] + opts)
+            if j is None:
+                return
+            if j:
+                props[prop], shown = opts[j - 1], " · %s" % opts[j - 1]
+        if not self.confirm("Create '%s'%s?" % (nt.clip(title.strip(), 40), shown)):
+            self.msg = "cancelled"
+            return
+        self.busy("Creating…")
+        if not self.title_prop:
+            self.title_prop = nt.title_property_name(schema.get("properties", {}))
+        page = self.client.create_page(self.title_prop, title.strip(), props)
+        self.all.insert(0, page)
+        self.sort_mode, self.group = 0, False
+        self.refilter()
+        self.sel = 0
+        self.msg = "created '%s'" % nt.clip(title.strip(), 40)
+
+    def database_files(self):
+        d = os.path.join(os.path.dirname(cfgmod.config_path()), "databases")
+        return d, sorted(os.path.join(d, f) for f in os.listdir(d) if f.endswith(".toml")) if os.path.isdir(d) else []
+
+    @staticmethod
+    def database_title(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("# ") and "Written by" not in line and "Your Notion" not in line:
+                        return line[2:].strip()
+        except OSError:
+            pass
+        return os.path.basename(path)
+
+    def switch_database(self):
+        """D: switch between the databases you have set up (each keeps its own tabs and settings)."""
+        import shutil as _sh
+        d, files = self.database_files()
+        os.makedirs(d, exist_ok=True)
+        current = os.path.join(d, "%s.toml" % self.cfg["data_source_id"])
+        _sh.copyfile(cfgmod.config_path(), current)  # remember this one before leaving it
+        d, files = self.database_files()
+        others = [f for f in files if f != current]
+        items = ["● " + self.database_title(current)] + [self.database_title(f) for f in others] + ["+ add another database…"]
+        i = self.popup("Databases", items)
+        if i is None or i == 0:
+            return
+        if i <= len(others):
+            _sh.copyfile(others[i - 1], cfgmod.config_path())
+        elif not self.pick_and_save(confirm=False):
+            return
+        self.load_config()
+        self.all, self.pages, self.cache, self.detail = [], [], {}, None
+        self.refresh_async("Loading %s…" % self.database_title(cfgmod.config_path()))
 
     # ------------------------------------------------------------ delegation tracking
     def load_delegations(self):
@@ -1632,6 +1776,8 @@ class App:
             self.guard(self.copy, "prompt")
         elif k == ord("?"):
             self.help()
+        elif k == ord("e"):
+            self.guard(self.edit_property)
         elif k == ord("S"):
             self.guard(self.settings)
 
@@ -1670,6 +1816,10 @@ class App:
             self.guard(self.pick_status_filter)
         elif k == ord("V"):
             self.guard(self.pick_view)
+        elif k == ord("n"):
+            self.guard(self.new_page)
+        elif k == ord("D"):
+            self.guard(self.switch_database)
         elif k == ord("O"):
             self.sort_mode = (self.sort_mode + 1) % len(self.SORTS)
             self.apply_sort()
@@ -1707,6 +1857,8 @@ class App:
             self.dscroll = 0
         elif k == ord("G"):
             self.dscroll = 10 ** 9
+        elif k == ord("c"):
+            self.guard(self.comment)
         else:
             self.common_key(k)
         return True

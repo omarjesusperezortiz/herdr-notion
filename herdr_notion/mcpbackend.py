@@ -417,9 +417,41 @@ class McpClient:
         m = re.search(r"<content>\n?(.*?)\n?</content>", text, re.S)
         return markdown_lines(m.group(1) if m else "")
 
-    def set_status(self, page_id, prop, kind, option):
-        self.call("notion-update-page", {"page_id": page_id, "command": "update_properties", "properties": {prop: option}})
+    def set_property(self, page_id, prop, value):
+        """Write one property value (an option name, text, a number, '__YES__'/'__NO__' for a checkbox, or None to clear)."""
+        self.call("notion-update-page", {"page_id": page_id, "command": "update_properties", "properties": {prop: value}})
         return self.get_page(page_id)
+
+    def set_status(self, page_id, prop, kind, option):
+        return self.set_property(page_id, prop, option)
+
+    def comments(self, page_id):
+        """[{id, author, when, text}] for the page-level comments, oldest first."""
+        res = self.call("notion-get-comments", {"page_id": page_id})
+        text = res.get("text", "") if isinstance(res, dict) else str(res)
+        out = []
+        for attrs, body in re.findall(r"<comment\s+([^>]*)>(.*?)</comment>", text, re.S):
+            a = dict(re.findall(r'([\w-]+)="([^"]*)"', attrs))
+            out.append({"id": a.get("id", ""), "author": uid(a.get("user-url", "")), "when": a.get("datetime", ""), "text": unescape(__import__("html").unescape(body.strip()))})
+        self.resolve_users({c["author"] for c in out if c["author"]})
+        for c in out:
+            c["author"] = self._users.get(c["author"], "someone")
+        return sorted(out, key=lambda c: c["when"])
+
+    def add_comment(self, page_id, text):
+        self.call("notion-create-comment", {"page_id": page_id, "markdown": text})
+
+    def create_page(self, title_prop, title, props=None):
+        """Create a page in this database and return it (shaped like a row)."""
+        values = dict(props or {})
+        values[title_prop] = title
+        res = self.call("notion-create-pages", {"parent": {"type": "data_source_id", "data_source_id": self.data_source_id},
+                                                "pages": [{"properties": values}]})
+        blob = json.dumps(res) if not isinstance(res, str) else res
+        m = re.search(r"https://[^\s\"\\]*notion[^\s\"\\]*", blob)
+        if not m:
+            raise nt.NotionError("the page was created but Notion did not say where")
+        return self.get_page(m.group(0).split("?")[0])
 
 
 def markdown_lines(md):

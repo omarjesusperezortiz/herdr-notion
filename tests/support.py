@@ -89,6 +89,27 @@ class FakeClient:
         more = start + size < len(self.pages)
         return {"results": chunk, "has_more": more, "cursor": {"at": start + size} if more else None, "note": ""}
 
+    def set_property(self, pid, prop, value):
+        self.writes.append(("property", pid, prop, value))
+        page_ = self.get_page(pid)
+        kind = SCHEMA["properties"][prop]["type"]
+        if kind in ("select", "status"):
+            page_["properties"][prop] = {"type": kind, kind: {"name": value} if value else None}
+        return page_
+
+    def comments(self, pid):
+        return list(getattr(self, "comment_list", []))
+
+    def add_comment(self, pid, text):
+        self.writes.append(("comment", pid, text))
+        self.comment_list = list(getattr(self, "comment_list", [])) + [{"id": "c9", "author": "Ada", "when": "2026-10-30T12:00:00Z", "text": text}]
+
+    def create_page(self, title_prop, title, props=None):
+        self.writes.append(("create", title, dict(props or {})))
+        new = page(len(self.pages), title, (props or {}).get("Status", "To do"))
+        self.pages.append(new)
+        return new
+
     def set_status(self, pid, prop, kind, option):
         self.writes.append(("status", pid, option))
         page_ = self.get_page(pid)
