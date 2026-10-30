@@ -705,21 +705,23 @@ class App:
         self.has_more, self.cursor, self.job = False, None, None
         self.client = mb.McpClient(self.cfg["data_source_id"]) if self.cfg else self.client
         self.client.want = set(self.cfg["columns"]) if self.cfg else set()
-        self.onboarding = True
-        try:
-            k = self.onboard(1, ["You are signed out. The login was revoked at Notion and removed from this machine.", "",
-                                 "Press Enter to sign in again (any account or workspace). Esc quits."])
-        finally:
-            self.onboarding = False
-        if k in (27, ord("q")):
-            self.want_quit = True
-            return
-        self.sign_in()
-        if oauth.load():
-            self.refresh_async("Loading…")
+        if self.require_sign_in("You are signed out. The login was revoked at Notion and removed from this machine."):
             self.msg = "signed in again"
-        else:
-            self.want_quit = True
+
+    def require_sign_in(self, text):
+        """The pages are only shown while signed in: ask to sign in, or quit. Returns True once signed in."""
+        while not oauth.load():
+            self.onboarding = True
+            try:
+                k = self.onboard(1, [text, "", "Press Enter to sign in (any account or workspace). Esc quits."])
+            finally:
+                self.onboarding = False
+            if k in (27, ord("q")):
+                self.want_quit = True
+                return False
+            self.guard(self.sign_in)
+        self.refresh_async("Loading…")
+        return True
 
     def settings(self):
         self.connection()
@@ -1120,11 +1122,15 @@ class App:
         except (cfgmod.ConfigError, nt.NotionError) as e:
             self.show([str(e), "", "Press any key to quit."])
             return
+        if not self.require_sign_in("Sign in to Notion to see your pages."):
+            return
         self.refresh_async("Loading your pages…")
         self.splash()
         while True:
             self.scr.timeout(-1)  # screens opened from here (connection, review offer) read keys in blocking mode
             if self.want_quit:
+                return
+            if not oauth.load() and not self.require_sign_in("You are signed out. Sign in to see your pages."):
                 return
             if self.reconnect:
                 self.connect_screen()
