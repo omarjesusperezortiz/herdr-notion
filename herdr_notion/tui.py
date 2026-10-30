@@ -3,6 +3,7 @@ import curses
 import os
 import shutil
 import subprocess
+import sys
 import textwrap
 import traceback
 import webbrowser
@@ -600,8 +601,18 @@ def log_path():
     return os.path.join(d, "error.log")
 
 
+def set_title(title):
+    """Terminal title: the open script reads it to tell if Notion is already running."""
+    try:
+        sys.stdout.write("\033]0;%s\007" % title)
+        sys.stdout.flush()
+    except OSError:
+        pass
+
+
 def main():
     os.environ.setdefault("ESCDELAY", "25")
+    set_title("herdr-notion")
     try:
         curses.wrapper(lambda scr: App(scr).run())
     except KeyboardInterrupt:
@@ -615,8 +626,11 @@ def main():
             where = "Details: %s" % path
         except OSError:
             where = ""
+        set_title("")
         print("herdr-notion crashed: %s: %s\n%s\nPress Enter to close." % (type(e).__name__, e, where))
         try:
             input()
         except EOFError:
             pass
+    finally:
+        set_title("")

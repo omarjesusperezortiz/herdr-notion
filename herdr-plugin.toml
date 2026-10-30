@@ -20,11 +20,18 @@ title = "Notion"
 placement = "split"
 command = ["python3", "-m", "herdr_notion"]
 
-# Default: split beside the pane you run it from, in the same tab (one per tab).
+# Default: run Notion in the pane you invoke it from (a plain shell); quitting
+# returns that shell. Falls back to a split when an agent is running there.
 [[actions]]
 id = "open-notion"
 title = "Notion: open"
-description = "Open the Notion TUI in a split beside the current pane (focus it if already open in this tab)."
+description = "Run the Notion TUI in the current pane (shell panes only; splits beside agents)."
+command = ["bash", "scripts/open-notion.sh", "here"]
+
+[[actions]]
+id = "open-notion-split"
+title = "Notion: open (split)"
+description = "Open the Notion TUI in a split beside the current pane."
 command = ["bash", "scripts/open-notion.sh", "split"]
 
 [[actions]]

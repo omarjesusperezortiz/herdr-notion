@@ -32,10 +32,13 @@ For local development: `herdr plugin link ./herdr-notion`.
 
 ## Set up
 
-Open it from the herdr action palette (**Notion: open** splits beside the pane you
-run it from and focuses it if already open in that tab; **(overlay)** and
-**(new tab)** variants also exist), or run
-`herdr plugin action invoke herdr-notion.open-notion`. On first run it starts a short setup:
+Run `herdr plugin action invoke herdr-notion.open-notion` (or pick **Notion: open**
+in the action palette). It runs Notion **in the pane you invoked it from**, as
+if you had typed the command there, and quitting with `q` gives that pane's
+shell back. If an agent is running in that pane it splits beside it instead, so
+nothing is typed into the agent. Invoking it while Notion is already open
+there does nothing. Variants: `open-notion-split`, `open-notion-overlay`,
+`open-notion-tab`. On first run it starts a short setup:
 
 1. **Create an integration** (once): open <https://www.notion.so/profile/integrations>,
    choose **New integration**, type **Internal**, save, and copy the secret.
