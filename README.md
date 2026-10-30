@@ -58,6 +58,19 @@ Token sources, first match wins: `api_token_cmd` in the config (a shell command
 that prints it, for example a keychain lookup), the `NOTION_TOKEN` environment
 variable, the `token` file.
 
+### Change the token
+
+Press `T` in the plugin, or run this in any terminal (the secret is typed
+hidden and checked against Notion before anything is written):
+
+```sh
+bash scripts/set-token.sh        # from the plugin folder
+# or: PYTHONPATH=<plugin folder> python3 -m herdr_notion token
+```
+
+Both replace the `token` file. If `api_token_cmd` or `NOTION_TOKEN` is set it
+still wins, and the tool says so.
+
 Bind a key to open it, in `~/.config/herdr/config.toml`:
 
 ```toml
@@ -119,6 +132,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `]` / `[` | next / previous page while reading one |
 | `y` / `Y` | copy the page URL / the delegate prompt (pbcopy, wl-copy, xclip or xsel) |
 | `r` / `R` | refresh / reload config |
+| `T` | change the Notion token |
 | `?` | help |
 | `Esc`, `q` | back / quit |
 

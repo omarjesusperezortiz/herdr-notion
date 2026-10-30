@@ -83,6 +83,16 @@ def save_token(token, path=None):
     os.chmod(path, 0o600)
 
 
+def token_override(cfg, environ=None):
+    """Name of a token source that takes precedence over the token file, or ''."""
+    environ = os.environ if environ is None else environ
+    if cfg.get("api_token_cmd"):
+        return "api_token_cmd in config.toml"
+    if environ.get("NOTION_TOKEN"):
+        return "$NOTION_TOKEN"
+    return ""
+
+
 def resolve_token(cfg, environ=None, path=None):
     """Token from api_token_cmd, else $NOTION_TOKEN, else the token file."""
     environ = os.environ if environ is None else environ

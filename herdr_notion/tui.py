@@ -19,7 +19,7 @@ HELP = [
                   ("f, 1-9", "switch filter"), ("/", "search by title"), ("Esc, q", "back / quit")]),
     ("Act", [("s", "change status (asks to confirm)"), ("d", "delegate to an agent"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
-    ("Config", [("r", "refresh"), ("R", "reload config")]),
+    ("Config", [("r", "refresh"), ("R", "reload config"), ("T", "change the Notion token")]),
 ]
 
 class App:
@@ -372,6 +372,21 @@ class App:
         dg.send_prompt(pane, prompt)
         self.msg = "started %s and sent prompt" % kinds[j]["name"]
 
+    def change_token(self):
+        """Replace the saved token. The new one is checked against Notion before it is written."""
+        token = self.ask("new secret: ", secret=True)
+        if not token or not token.strip():
+            return
+        self.busy("Checking the token…")
+        me = nt.Client(token.strip(), "").request("GET", "/users/me")
+        cfgmod.save_token(token)
+        self.client = nt.Client(cfgmod.resolve_token(self.cfg), self.cfg["database_id"], self.cfg["data_source_id"])
+        self.cache = {}
+        self.refresh()
+        over, who = cfgmod.token_override(self.cfg), me.get("name") or "the integration"
+        self.msg = ("token saved for %s, but %s still takes precedence" % (who, over)
+                    if over else "token saved for %s" % who)
+
     def pick_filter(self, idx=None):
         if idx is None:
             idx = self.popup("Filter", [f["name"] for f in self.cfg["filters"]], self.fidx)
@@ -546,6 +561,8 @@ class App:
             self.guard(self.copy, "prompt")
         elif k == ord("?"):
             self.help()
+        elif k == ord("T"):
+            self.guard(self.change_token)
 
     def list_key(self, k):
         self.msg = "" if k != -1 else self.msg

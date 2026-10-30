@@ -122,3 +122,10 @@ class Delegate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TokenOverrideTest(unittest.TestCase):
+    def test_reports_the_source_that_beats_the_token_file(self):
+        self.assertEqual(config.token_override({}, {}), "")
+        self.assertEqual(config.token_override({}, {"NOTION_TOKEN": "x"}), "$NOTION_TOKEN")
+        self.assertIn("api_token_cmd", config.token_override({"api_token_cmd": "echo x"}, {"NOTION_TOKEN": "x"}))
