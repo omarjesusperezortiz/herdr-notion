@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 import traceback
 import webbrowser
@@ -33,6 +34,10 @@ class App:
         self.cfg = None
         self.client = None
         self.reconnect = ""  # set by guard() on a connection problem; the main loop opens the Connect screen
+        self.job = None  # background load in flight: {"seq", "label", "kind", "done", "result", "error", "on_done"}
+        self.job_seq = 0
+        self.onboarding = False
+        self.picked_title, self.picked_tabs = "", []
         self.fidx = 0
         self.query = ""
         self.pages = []
@@ -71,12 +76,50 @@ class App:
         try:
             return fn(*a)
         except (nt.NotionError, dg.HerdrError, cfgmod.ConfigError, oauth.OAuthError) as e:
-            self.msg = str(e)
-            if "Could not find" in self.msg:  # the token cannot see the configured database
-                self.msg = "This token cannot see the configured database."
-            if self.connection_problem(self.msg):
-                self.reconnect = self.msg
+            self.report(e)
         return None
+
+    def report(self, e):
+        self.msg = str(e)
+        if "Could not find" in self.msg:  # the account cannot see the configured database
+            self.msg = "This token cannot see the configured database."
+        if self.connection_problem(self.msg):
+            self.reconnect = self.msg
+
+    # ------------------------------------------------------------ background loading
+    SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def spin(self):
+        return self.SPINNER[int(time.time() * 10) % len(self.SPINNER)]
+
+    def start_job(self, label, work, on_done, kind="list"):
+        """Run `work` in a thread; `on_done(result)` runs on the main loop when it finishes. A newer job replaces
+        an older one (the older result is dropped), so switching tabs quickly never shows stale rows."""
+        self.job_seq += 1
+        box = {"seq": self.job_seq, "label": label, "kind": kind, "done": False, "on_done": on_done}
+
+        def run():
+            try:
+                box["result"] = work()
+            except Exception as e:  # handed to the main loop
+                box["error"] = e
+            box["done"] = True
+
+        self.job = box
+        threading.Thread(target=run, daemon=True).start()
+
+    def poll_job(self):
+        job = self.job
+        if not job or not job["done"]:
+            return
+        self.job = None
+        if "error" in job:
+            e = job["error"]
+            if isinstance(e, (nt.NotionError, dg.HerdrError, cfgmod.ConfigError, oauth.OAuthError)):
+                self.report(e)
+                return
+            raise e
+        job["on_done"](job["result"])
 
     @staticmethod
     def connection_problem(msg):
@@ -84,44 +127,68 @@ class App:
                                       "not signed in", "login expired", "Notion MCP 401"))
 
     # ------------------------------------------------------------ data
-    def refresh(self):
-        self.busy("Loading…")
-        schema = self.client.discover()
+    def build_list_query(self, schema):
         if not self.title_prop:
             self.title_prop = nt.title_property_name(schema.get("properties", {}))
-        self.groups = nt.status_groups(schema, self.cfg["status_property"])
         flt = self.cfg["filters"][self.fidx]
-        body = nt.build_query(flt, self.query, self.title_prop, "me",
-                              self.cfg["page_size"])
+        return nt.build_query(flt, self.query, self.title_prop, "me", self.cfg["page_size"])
+
+    def apply_list(self, schema, body, res):
+        self.groups = nt.status_groups(schema, self.cfg["status_property"])
         self.query_body = body
-        res = self.client.query(body)
         self.pages = res.get("results", [])
         self.has_more, self.cursor = bool(res.get("has_more")), res.get("cursor")
         self.sel = self.top = 0
         self.msg = ""
 
+    def refresh(self):
+        """Blocking load, for flows that need the list right away."""
+        self.busy("Loading…")
+        schema = self.client.discover()
+        body = self.build_list_query(schema)
+        self.apply_list(schema, body, self.client.query(body))
+
+    def refresh_async(self, label="Loading…"):
+        """Load the list in the background: the current rows stay on screen (dimmed) until the new ones arrive."""
+        def work():
+            schema = self.client.discover()
+            body = self.build_list_query(schema)
+            return schema, body, self.client.query(body)
+
+        self.start_job(label, work, lambda r: self.apply_list(*r), "list")
+
     def load_more(self):
         """Append the next page of results (called when the selection reaches the end of the list)."""
-        if not self.has_more or not self.cursor:
+        if not self.has_more or not self.cursor or self.job:
             return
-        self.msg = "loading more…"
-        res = self.client.query(self.query_body, cursor=self.cursor, seen={p["id"] for p in self.pages})
+        body, cursor = self.query_body, self.cursor
         seen = {p["id"] for p in self.pages}
-        self.pages += [p for p in res.get("results", []) if p["id"] not in seen]
-        self.has_more, self.cursor = bool(res.get("has_more")), res.get("cursor")
-        self.msg = res.get("note", "")
+
+        def done(res):
+            have = {p["id"] for p in self.pages}
+            self.pages += [p for p in res.get("results", []) if p["id"] not in have]
+            self.has_more, self.cursor = bool(res.get("has_more")), res.get("cursor")
+            self.msg = res.get("note", "")
+
+        self.start_job("loading more…", lambda: self.client.query(body, cursor=cursor, seen=seen), done, "more")
 
     def open_page(self, page):
-        self.busy("Loading page…")
-        page = self.client.get_page(page["id"])
-        if page["id"] not in self.cache:
-            self.cache[page["id"]] = self.client.body_lines(page["id"])
-        body = self.cache[page["id"]]
-        lines = [nt.page_title(page), ""]
-        lines += ["%s: %s" % kv for kv in nt.page_properties(page)]
-        lines += ["", page.get("url", ""), ""] + body
-        self.detail = {"page": page, "lines": lines, "body": "\n".join(body)}
+        """Show the page at once with what the list already knows; the body fills in when it arrives."""
+        pid = page["id"]
+        self.detail = {"page": page, "lines": [], "body": "Loading…" if pid not in self.cache else "\n".join(self.cache[pid])}
         self.dscroll = 0
+
+        def work():
+            fresh = self.client.get_page(pid)
+            return fresh, self.cache.get(pid) or self.client.body_lines(pid)
+
+        def done(r):
+            fresh, body = r
+            self.cache[pid] = body
+            if self.detail and self.detail["page"]["id"] == pid:
+                self.detail = {"page": fresh, "lines": [], "body": "\n".join(body)}
+
+        self.start_job("Loading page…", work, done, "detail")
 
     def current(self):
         if self.detail:
@@ -170,7 +237,7 @@ class App:
                              self.cp(4) | curses.A_BOLD if i == self.fidx and self.colors
                              else curses.A_REVERSE if i == self.fidx else curses.A_DIM)
             x += len(label) + 1
-        right = "%d%s pages%s " % (len(self.pages), "+" if self.has_more else "", ' · / "%s"' % self.query if self.query else "")
+        right = "%s%d%s pages%s " % (self.spin() + " " if self.job else "", len(self.pages), "+" if self.has_more else "", ' · / "%s"' % self.query if self.query else "")
         if x + len(right) < w:
             self.scr.addnstr(0, w - 1 - len(right), right, len(right), curses.A_DIM)
 
@@ -194,9 +261,10 @@ class App:
             self.top = self.sel
         if self.sel >= self.top + rows:
             self.top = self.sel - rows + 1
+        stale = bool(self.job and self.job["kind"] == "list" and self.pages)
         for r, p in enumerate(self.pages[self.top:self.top + rows]):
             y, on = 3 + r, self.top + r == self.sel
-            base = curses.A_REVERSE if on else 0
+            base = curses.A_REVERSE if on else (curses.A_DIM if stale else 0)
             self.scr.addnstr(y, 0, " " * (w - 1), w - 1, base)
             self.scr.addnstr(y, 0, "▌" if on else " ", 1, base | self.cp(2))
             self.scr.addstr(y, 2, nt.clip(nt.page_title(p), tw), base | (curses.A_BOLD if on else 0))
@@ -212,7 +280,12 @@ class App:
                     key = next(c for c in extra if c.upper() == n)
                     self.scr.addstr(y, x, nt.clip(nt.prop_text(p["properties"].get(key)), cw), base)
                 x += cw
-        if not self.pages:
+        if not self.pages and self.job:
+            for r in range(min(rows, 8)):  # skeleton rows while the first page loads
+                bar = "░" * (14 + (r * 7) % 17)
+                self.scr.addnstr(3 + r, 2, bar, tw, curses.A_DIM)
+                self.scr.addnstr(3 + r, 2 + tw + 2, "░░░░░░░░", 8, curses.A_DIM)
+        elif not self.pages:
             self.scr.addnstr(4, 2, "No pages match this filter.", w - 3, curses.A_DIM)
         if peek and self.pages:
             self.rule(h - 3 - peek, w)
@@ -273,8 +346,9 @@ class App:
         if len(text) < len(nt.fit_hints(hints, w - 2)):
             ctx = ""
             text = nt.fit_hints(hints, w - 2)
-        if self.msg:
-            self.scr.addnstr(h - 2, 1, self.msg, w - 2, curses.A_BOLD)
+        note = "%s %s" % (self.spin(), self.job["label"]) if self.job else self.msg
+        if note:
+            self.scr.addnstr(h - 2, 1, note, w - 2, curses.A_BOLD if not self.job else curses.A_DIM)
             hint_row = h - 1
         else:
             hint_row = h - 2
@@ -642,13 +716,13 @@ class App:
         if idx is not None and idx < len(self.cfg["filters"]):
             self.fidx = idx
             self.query = ""
-            self.refresh()
+            self.refresh_async("Loading %s…" % self.cfg["filters"][idx]["name"])
 
     def search(self):
         q = self.ask("search: ", self.query)
         if q is not None:
             self.query = q.strip()
-            self.refresh()
+            self.refresh_async("Searching…")
 
     # ------------------------------------------------------------ first-run setup
     def show(self, lines, key=True):
@@ -664,16 +738,71 @@ class App:
         self.scr.refresh()
         return self.scr.getch() if key else None
 
+    STEPS = ["Sign in with Notion", "Pick a database", "Your tabs"]
+    EXAMPLE = [("○", "Write the launch announcement", "To do", "Ada"), ("◐", "Fix login redirect loop", "In progress", "Grace"),
+               ("◐", "Review pricing page copy", "In review", "Linus"), ("✓", "Archive resolved tickets", "Done", "Ada")]
+
+    def page(self, step, lines, key=True):
+        """A message screen: the onboarding frame during first-run setup, a plain screen otherwise."""
+        return self.onboard(step, lines, key) if self.onboarding else self.show(lines, key)
+
+    def onboard(self, step, lines, key=True, reveal=False):
+        """First-run screen: logo, a three-step tracker, a message and a dim preview of the finished list."""
+        h, w = self.scr.getmaxyx()
+        self.scr.erase()
+        bw = max(20, min(w - 6, 46))
+        pause = (lambda: (self.scr.refresh(), time.sleep(0.09))) if reveal else (lambda: None)
+        self.scr.addnstr(1, 3, "╭" + "─" * (bw - 2) + "╮", w - 4, self.cp(2))
+        self.scr.addnstr(2, 3, "│", 1, self.cp(2))
+        self.scr.addnstr(2, 5, "◆ herdr-notion", bw - 4, curses.A_BOLD)
+        self.scr.addnstr(2, 3 + bw - 1, "│", 1, self.cp(2))
+        self.scr.addnstr(3, 3, "│", 1, self.cp(2))
+        self.scr.addnstr(3, 5, "Your Notion tasks, inside herdr", bw - 4, curses.A_DIM)
+        self.scr.addnstr(3, 3 + bw - 1, "│", 1, self.cp(2))
+        self.scr.addnstr(4, 3, "╰" + "─" * (bw - 2) + "╯", w - 4, self.cp(2))
+        pause()
+        for i, name in enumerate(self.STEPS):
+            done, now = i + 1 < step, i + 1 == step
+            mark = "✔" if done else "●" if now else "○"
+            attr = self.cp(3) if done else (curses.A_BOLD if now else curses.A_DIM)
+            self.scr.addnstr(6 + i, 3, "%s  %d  %s" % (mark, i + 1, name), w - 4, attr)
+            pause()
+        y = 10
+        for line in lines:
+            for part in (textwrap.wrap(line, max(w - 6, 10)) or [""]):
+                if y < h - 2:
+                    self.scr.addnstr(y, 3, part, w - 4, 0)
+                    y += 1
+        if h >= y + 8 and w >= 50:  # a dim example of what the list will look like
+            top = max(y + 1, h - 8)
+            self.scr.addnstr(top, 3, "example", w - 4, curses.A_DIM)
+            self.scr.addnstr(top + 1, 3, " Mine   Current sprint   All", w - 4, curses.A_DIM)
+            for i, (m, title, status, who) in enumerate(self.EXAMPLE):
+                row = " %s %-32s %-12s %s" % (m, title, status, who)
+                self.scr.addnstr(top + 2 + i, 3, row, w - 4, curses.A_DIM)
+                pause()
+        self.scr.refresh()
+        return self.scr.getch() if key else None
+
     def first_run(self):
-        """First start: sign in, then pick the database to browse. Returns True when config.toml is ready."""
-        if not oauth.load():
-            self.show(["Welcome to herdr-notion", "",
-                       "Browse and update a Notion database from this pane.",
-                       "First, sign in with your Notion account.", "", "Press a key to sign in. Esc quits."])
-            self.guard(self.sign_in)
+        """First start: sign in, pick the database, see the tabs. Returns True when config.toml is ready."""
+        self.onboarding = True
+        try:
             if not oauth.load():
+                k = self.onboard(1, ["Browse and update a Notion database from this pane.", "",
+                                     "Press Enter to sign in with your browser. Esc quits."], reveal=True)
+                if k in (27, ord("q")):
+                    return False
+                self.guard(self.sign_in)
+                if not oauth.load():
+                    return False
+            if not self.pick_and_save(confirm=False):
                 return False
-        return self.pick_and_save(confirm=False)
+            self.onboard(3, ["Tabs for %s:" % self.picked_title, "  " + "  ·  ".join(self.picked_tabs), "",
+                             "The first one opens. S shows the connection; r refreshes.", "", "Press Enter to start."])
+            return True
+        finally:
+            self.onboarding = False
 
     def pick_database(self):
         """Ask for a database name or Notion link, then which property is the status.
@@ -681,21 +810,21 @@ class App:
         searcher = mb.McpClient("")
         try:
             while True:
-                self.show(["Pick the database to browse", "",
-                           "Type part of its name (for example Tasks), or paste its Notion link.",
-                           "Esc cancels."], key=False)
+                self.page(2, ["Pick the database to browse.", "",
+                              "Type part of its name (for example Tasks), or paste its Notion link.",
+                              "Esc cancels."], key=False)
                 term = self.ask("database: ")
                 if not term or not term.strip():
                     return None
                 found = searcher.search_databases(term)
                 if not found:
                     self.msg = "no database matches %r; try another name or paste its link" % term.strip()
-                    self.show(["No database found", "", self.msg, "", "Press a key to try again."])
+                    self.page(2, ["No database found.", "", self.msg, "", "Press a key to try again."])
                     continue
                 if len(found) == 1:
                     i = 0
                 else:
-                    self.show(["Pick the database to browse"], key=False)
+                    self.page(2, ["Pick the database to browse."], key=False)
                     i = self.popup("Database", [f["title"] for f in found])
                     if i is None:
                         return None
@@ -707,7 +836,7 @@ class App:
             if len(options) == 1:
                 status_prop = options[0]
             elif options:
-                self.show(["Pick the status property"], key=False)
+                self.page(2, ["Pick the status property."], key=False)
                 j = self.popup("Which property is the status?", [st.property_label(schema, o) for o in options])
                 if j is None:
                     return None
@@ -724,6 +853,8 @@ class App:
         if not picked:
             return False
         choice, schema, status_prop = picked
+        self.picked_title = choice["title"]
+        self.picked_tabs = [f["name"] for f in st.suggest_filters(schema, status_prop)]
         if confirm and not self.confirm("Replace config.toml for '%s'? Your filters and prompt are regenerated. [y/N]" % choice["title"]):
             return False
         os.makedirs(os.path.dirname(cfgmod.config_path()), exist_ok=True)
@@ -788,15 +919,18 @@ class App:
         except (cfgmod.ConfigError, nt.NotionError) as e:
             self.show([str(e), "", "Press any key to quit."])
             return
-        self.guard(self.refresh)
+        self.refresh_async("Loading…")
         while True:
             if self.reconnect:
                 self.connect_screen()
+            self.poll_job()
             (self.draw_detail if self.detail else self.draw_list)()
             self.scr.refresh()
+            self.scr.timeout(100 if self.job else -1)
             k = self.scr.getch()
-            if k == curses.KEY_RESIZE:
+            if k == -1 or k == curses.KEY_RESIZE:
                 continue
+            self.scr.timeout(-1)  # handlers below (popups, confirm, ask) read keys in blocking mode
             if self.detail:
                 if not self.detail_key(k):
                     continue
@@ -843,10 +977,10 @@ class App:
         elif k == ord("/"):
             self.guard(self.search)
         elif k == ord("r"):
-            self.guard(self.refresh)
+            self.refresh_async("Refreshing…")
         elif k == ord("R"):
             self.guard(self.load_config)
-            self.guard(self.refresh)
+            self.refresh_async("Reloading…")
         else:
             self.common_key(k)
         return True
