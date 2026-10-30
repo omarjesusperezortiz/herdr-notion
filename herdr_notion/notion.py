@@ -85,7 +85,8 @@ def prop_text(prop):
             return prop_text({"type": v["type"], v["type"]: v.get(v["type"])})
         return ""
     if t == "relation":
-        return "%d linked" % len(v or []) if v else ""
+        titles = [x["title"] for x in v or [] if x.get("title")]
+        return ", ".join(titles) if titles else ("%d linked" % len(v) if v else "")
     if t == "files":
         return ", ".join(f.get("name", "") for f in v or [])
     if t in ("created_by", "last_edited_by"):

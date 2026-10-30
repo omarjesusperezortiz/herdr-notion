@@ -36,6 +36,9 @@ class App:
         self.fidx = 0
         self.query = ""
         self.pages = []
+        self.has_more = False
+        self.cursor = None
+        self.query_body = {}
         self.sel = 0
         self.top = 0
         self.detail = None  # {"page", "lines"}
@@ -51,6 +54,7 @@ class App:
         if not cfg["data_source_id"]:
             raise cfgmod.NeedsSetup("no database picked yet")
         self.client = mb.McpClient(cfg["data_source_id"])
+        self.client.want = set(cfg["columns"])
         self.title_prop = cfg["title_property"]
         self.groups = {}
         self.fidx = 0
@@ -89,9 +93,23 @@ class App:
         flt = self.cfg["filters"][self.fidx]
         body = nt.build_query(flt, self.query, self.title_prop, "me",
                               self.cfg["page_size"])
-        self.pages = self.client.query(body).get("results", [])
+        self.query_body = body
+        res = self.client.query(body)
+        self.pages = res.get("results", [])
+        self.has_more, self.cursor = bool(res.get("has_more")), res.get("cursor")
         self.sel = self.top = 0
         self.msg = ""
+
+    def load_more(self):
+        """Append the next page of results (called when the selection reaches the end of the list)."""
+        if not self.has_more or not self.cursor:
+            return
+        self.msg = "loading more…"
+        res = self.client.query(self.query_body, cursor=self.cursor, seen={p["id"] for p in self.pages})
+        seen = {p["id"] for p in self.pages}
+        self.pages += [p for p in res.get("results", []) if p["id"] not in seen]
+        self.has_more, self.cursor = bool(res.get("has_more")), res.get("cursor")
+        self.msg = res.get("note", "")
 
     def open_page(self, page):
         self.busy("Loading page…")
@@ -152,7 +170,7 @@ class App:
                              self.cp(4) | curses.A_BOLD if i == self.fidx and self.colors
                              else curses.A_REVERSE if i == self.fidx else curses.A_DIM)
             x += len(label) + 1
-        right = "%d pages%s " % (len(self.pages), ' · / "%s"' % self.query if self.query else "")
+        right = "%d%s pages%s " % (len(self.pages), "+" if self.has_more else "", ' · / "%s"' % self.query if self.query else "")
         if x + len(right) < w:
             self.scr.addnstr(0, w - 1 - len(right), right, len(right), curses.A_DIM)
 
@@ -170,7 +188,8 @@ class App:
         tw = max(10, w - 4 - sum(cw + 2 for _, cw in cols))
         head = "  " + "TITLE".ljust(tw) + "".join("  " + n.ljust(cw) for n, cw in cols)
         self.scr.addnstr(2, 0, head, w - 1, curses.A_DIM | curses.A_BOLD)
-        rows = h - 6
+        peek = 4 if h >= 20 else 0  # the selected page in full, since titles get clipped in the table
+        rows = h - 6 - peek
         if self.sel < self.top:
             self.top = self.sel
         if self.sel >= self.top + rows:
@@ -195,6 +214,15 @@ class App:
                 x += cw
         if not self.pages:
             self.scr.addnstr(4, 2, "No pages match this filter.", w - 3, curses.A_DIM)
+        if peek and self.pages:
+            self.rule(h - 3 - peek, w)
+            p = self.pages[self.sel]
+            for i, line in enumerate(textwrap.wrap(nt.clean(nt.page_title(p)), max(w - 4, 10))[:2]):
+                self.scr.addnstr(h - 2 - peek + i, 2, line, w - 3, curses.A_BOLD)
+            mark, text, attr = self.status_cell(p)
+            facts = [text] + [nt.prop_text(p["properties"].get(c)) for c in extra]
+            facts = [f for f in facts if f] + ["edited " + nt.relative_time(p.get("last_edited_time"))]
+            self.scr.addnstr(h - 4, 2, "  ·  ".join(facts), w - 3, curses.A_DIM)
         self.rule(h - 3, w)
         self.footer([("⏎", "open"), ("s", "status"), ("d", "delegate"), ("f", "filters"), ("/", "search"), ("?", "more")])
 
@@ -800,6 +828,9 @@ class App:
         if k in (ord("q"), 27):
             return False
         if k in (curses.KEY_DOWN, ord("j")):
+            if self.sel >= n - 1 and self.has_more:
+                self.guard(self.load_more)
+                n = len(self.pages)
             self.sel = min(self.sel + 1, max(n - 1, 0))
         elif k in (curses.KEY_UP, ord("k")):
             self.sel = max(self.sel - 1, 0)

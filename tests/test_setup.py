@@ -20,7 +20,7 @@ class Discovery(unittest.TestCase):
         self.assertEqual(setup.status_candidates(SCHEMA), ["State", "Priority"])
 
     def test_column_candidates(self):
-        self.assertEqual(setup.column_candidates(SCHEMA, "State"), ["Priority", "Owner"])
+        self.assertEqual(setup.column_candidates(SCHEMA, "State"), ["Owner", "Priority"])
 
     def test_open_filter_excludes_every_complete_option(self):
         self.assertEqual(setup.open_filter(SCHEMA, "State"), {"and": [
@@ -71,7 +71,7 @@ class RenderConfig(unittest.TestCase):
         self.assertEqual(cfg["database_id"], "db1")
         self.assertEqual(cfg["data_source_id"], "ds1")
         self.assertEqual(cfg["status_property"], "State")
-        self.assertEqual(cfg["columns"], ["State", "Priority", "Owner"])
+        self.assertEqual(cfg["columns"], ["State", "Owner", "Priority"])
         self.assertEqual([f["name"] for f in cfg["filters"]], ["Mine", "Open", "All"])
         self.assertEqual(cfg["filters"][1]["filter"]["and"][0]["status"]["does_not_equal"], "Done")
         self.assertEqual(cfg["filters"][0]["filter"]["and"][0], {"property": "Owner", "people": {"contains": "me"}})
@@ -130,3 +130,11 @@ class ReplaceFilters(unittest.TestCase):
         self.assertEqual([f["name"] for f in cfg["filters"]], ["Mine", "All"])
         self.assertEqual(cfg["delegate"]["prompt"], "p")
         self.assertEqual(cfg["data_source_id"], "d")
+
+
+class Columns(unittest.TestCase):
+    def test_assignee_relation_beats_system_columns(self):
+        schema = {"properties": {"Name": {"type": "title", "title": {}}, "Status": {"type": "status", "status": {"options": []}},
+                                 "Completed At": {"type": "date", "date": {}}, "Assignee Notion user": {"type": "people", "people": {}},
+                                 "Assignee": {"type": "relation", "relation": {}}, "Priority": {"type": "select", "select": {"options": []}}}}
+        self.assertEqual(setup.column_candidates(schema, "Status"), ["Assignee", "Priority"])

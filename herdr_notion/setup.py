@@ -43,10 +43,27 @@ def property_label(schema, name):
     return "%s  (%s: %s)" % (name, kind, shown)
 
 
+SKIP_WORDS = ("completed", "created", "updated", "edited", "notion user", "last ")
+
+
 def column_candidates(schema, status_prop, limit=2):
+    """Columns worth showing next to the status: who it is assigned to, then priority, then a due date."""
     props = schema.get("properties") or {}
-    cols = [n for n, p in props.items() if p.get("type") in COLUMN_TYPES and n != status_prop]
-    return cols[:limit]
+
+    def rank(name, p):
+        low = name.lower()
+        if any(w in low for w in SKIP_WORDS):
+            return None
+        if any(w in low for w in PERSON_WORDS) and p.get("type") in ("people", "relation"):
+            return 0
+        if "priorit" in low and p.get("type") in ("select", "status"):
+            return 1
+        if p.get("type") == "date" and any(w in low for w in ("due", "deadline", "fecha")):
+            return 2
+        return 3 if p.get("type") in COLUMN_TYPES else None
+
+    ranked = [(rank(n, p), i, n) for i, (n, p) in enumerate(props.items()) if n != status_prop]
+    return [n for r, i, n in sorted(x for x in ranked if x[0] is not None)][:limit]
 
 
 def open_filter(schema, status_prop):

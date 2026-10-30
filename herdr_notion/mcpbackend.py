@@ -6,6 +6,23 @@ import re
 from . import mcp, notion as nt, oauth
 
 
+def uid(ref):
+    """Bare user id from a `user://<id>` reference."""
+    return ref[len("user://"):] if isinstance(ref, str) and ref.startswith("user://") else ref
+
+
+def person_ids(rows, schema):
+    """Every user id referenced by a people property in `rows`."""
+    kinds = [n for n, p in schema["properties"].items() if p["type"] == "people"]
+    out = set()
+    for row in rows:
+        for n in kinds:
+            val = row.get(n) or row.get("userDefined:" + n)
+            if val:
+                out.update(uid(i) for i in (val if isinstance(val, list) else json.loads(val)))
+    return out
+
+
 def unescape(s):
     return re.sub(r"\\([\\\[\](){}*_`#~>|+.!-])", r"\1", s or "")
 
@@ -47,7 +64,7 @@ def schema_from_state(state):
     return {"title": [{"plain_text": state.get("name", "")}], "properties": props, "url": state.get("url", "")}
 
 
-def to_page(row, schema, users=None):
+def to_page(row, schema, users=None, titles=None):
     """REST-shaped page from a rows-mode result (or the <properties> JSON of a fetched page)."""
     kinds = {n: p["type"] for n, p in schema["properties"].items()}
     props = {}
@@ -68,10 +85,10 @@ def to_page(row, schema, users=None):
         elif t == "people":
             ids = val if isinstance(val, list) else json.loads(val or "[]")
             names = users or {}
-            props[name] = {"type": t, t: [{"id": i, "name": names.get(i, "someone")} for i in ids]}
+            props[name] = {"type": t, t: [{"id": uid(i), "name": names.get(uid(i), "(unknown user)")} for i in ids]}
         elif t == "relation":
             ids = val if isinstance(val, list) else json.loads(val or "[]")
-            props[name] = {"type": t, t: [{"id": i} for i in ids]}
+            props[name] = {"type": t, t: [{"id": i, "title": (titles or {}).get(i.split("?")[0], "")} for i in ids]}
         elif t == "checkbox":
             props[name] = {"type": t, t: val in (1, True, "__YES__")}
         elif t in ("number", "url", "email", "phone_number", "created_time", "last_edited_time"):
@@ -141,6 +158,8 @@ class McpClient:
         self.data_source_id = data_source_id
         self._schema = None
         self._users = {}
+        self._titles = {}
+        self.want = set()  # relation columns shown in the list: their target pages' titles get looked up
 
     # --- plumbing
     def call(self, name, args=None):
@@ -191,24 +210,116 @@ class McpClient:
         self._schema = schema_from_state(tag_json(text, "data-source-state"))
         return self._schema
 
-    def query(self, body):
+    def resolve_users(self, ids):
+        """Fill the id -> name cache for ids not seen yet (a few parallel lookups)."""
+        todo = [i for i in ids if i not in self._users][:40]
+        if not todo:
+            return
+
+        def one(i):
+            try:
+                res = self.call("notion-get-users", {"user_id": i})
+                for u in res.get("results", []) if isinstance(res, dict) else []:
+                    if u.get("id") == i and u.get("name"):
+                        return i, u["name"]
+            except nt.NotionError:
+                pass
+            return i, None
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for i, name in pool.map(one, todo):
+                self._users[i] = name or "(unknown user)"
+
+    def relation_urls(self, rows, schema):
+        out = set()
+        for row in rows:
+            for n in self.want:
+                if schema["properties"].get(n, {}).get("type") == "relation":
+                    val = row.get(n) or row.get("userDefined:" + n)
+                    if val:
+                        out.update(u.split("?")[0] for u in (val if isinstance(val, list) else json.loads(val)))
+        return out
+
+    def resolve_titles(self, urls):
+        """Fill the url -> page title cache (a few parallel fetches)."""
+        todo = [u for u in urls if u not in self._titles][:40]
+        if not todo:
+            return
+
+        def one(u):
+            try:
+                res = self.call("notion-fetch", {"id": u})
+                return u, unescape((res.get("title") if isinstance(res, dict) else "") or "")
+            except nt.NotionError:
+                return u, ""
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for u, title in pool.map(one, todo):
+                self._titles[u] = title
+
+    def paging_key(self, schema):
+        """Property that orders pages for paging: last edited, else created."""
+        for kind in ("last_edited_time", "created_time"):
+            for n, p in schema["properties"].items():
+                if p["type"] == kind:
+                    return n, kind
+        return "", ""
+
+    def query(self, body, cursor=None, seen=()):
+        """One page of rows, newest edit first. The rows call has no cursor and date filters compare whole days, so
+        the next page continues from a day: rows on or before the last day seen (overlapping that day, which the
+        caller de-duplicates through `seen`). When a single day holds more rows than one page, the other end of
+        that day is read in ascending order and then the walk moves on to earlier days; `note` is set when rows of
+        such a day may be missing. `cursor` is opaque: pass back what the previous call returned."""
         schema = self.discover()
-        data = {"mode": "rows", "data_source_url": "collection://" + self.data_source_id,
-                "limit": max(1, min(int(body.get("page_size", 50)), 100))}
-        if body.get("filter"):
-            data["filter"] = to_mcp_filter(body["filter"], schema)
-            if data["filter"]["type"] != "group":
-                data["filter"] = {"type": "group", "operator": "and", "filters": [data["filter"]]}
+        key, kind = self.paging_key(schema)
+        user_sorted = bool(body.get("sorts"))
+        paged = bool(key) and not user_sorted
+        cursor = cursor or {}
+        mode, day = cursor.get("mode", "start"), cursor.get("day", "")
+        limit = 100 if (cursor or not paged) else max(1, min(int(body.get("page_size", 50)), 100))
+        data = {"mode": "rows", "data_source_url": "collection://" + self.data_source_id, "limit": limit}
+        conds = [to_mcp_filter(body["filter"], schema)] if body.get("filter") else []
+        op = {"desc": "date_is_on_or_before", "asc": "date_is", "before": "date_is_before"}.get(mode)
+        if op and paged:
+            conds.append({"type": "property", "property": key, "propertyType": kind, "operator": op,
+                          "value": {"type": "exact", "value": day}})
+        if conds:
+            data["filter"] = {"type": "group", "operator": "and", "filters": conds}
         sorts = []
-        for s in body.get("sorts") or []:
-            prop = s.get("property") or next((n for n, p in schema["properties"].items() if p["type"] == s.get("timestamp")), "")
+        for sd in body.get("sorts") or []:
+            prop = sd.get("property") or next((n for n, p in schema["properties"].items() if p["type"] == sd.get("timestamp")), "")
             if prop:
-                sorts.append({"property": prop, "direction": s.get("direction", "descending")})
+                sorts.append({"property": prop, "direction": sd.get("direction", "descending")})
+        if paged:
+            sorts = [{"property": key, "direction": "ascending" if mode == "asc" else "descending"}]
         if sorts:
             data["sort"] = sorts
         res = self.call("notion-query-data-sources", {"data": data})
         rows = res.get("results", []) if isinstance(res, dict) else []
-        return {"results": [to_page(r, schema, self._users) for r in rows], "has_more": bool(isinstance(res, dict) and res.get("has_more"))}
+        self.resolve_users(person_ids(rows, schema))
+        self.resolve_titles(self.relation_urls(rows, schema))
+        pages = [to_page(r, schema, self._users, self._titles) for r in rows]
+        out = {"results": pages, "has_more": False, "cursor": None, "note": ""}
+        if not paged:
+            return out
+        fresh = [p for p in pages if p["id"] not in seen]
+        last_day = (rows[-1].get(key, "") if rows else "")[:10]
+        if mode in ("start", "desc"):
+            if rows and (mode == "start" or fresh):
+                out.update(has_more=len(rows) >= limit, cursor={"mode": "desc", "day": last_day})
+            elif rows:  # a whole page of rows already seen: this day has more rows than one page
+                out.update(has_more=True, cursor={"mode": "asc", "day": day})
+        elif mode == "asc":
+            out.update(has_more=True, cursor={"mode": "before", "day": day})
+            if len(rows) >= limit and len(fresh) == len(rows):  # no overlap with what we have: the day is not covered
+                out["note"] = "more than %d pages were edited on %s; some of them are not listed" % (2 * limit, day)
+        else:  # "before": earlier days, normal walk again
+            if rows:
+                out.update(has_more=len(rows) >= limit, cursor={"mode": "desc", "day": last_day})
+        return out
 
     def _fetch_page(self, page_id):
         res = self.call("notion-fetch", {"id": page_id})
@@ -218,7 +329,9 @@ class McpClient:
         text = self._fetch_page(page_id)
         row = tag_json(text, "properties")
         row.setdefault("url", page_id)
-        return to_page(row, self.discover(), self._users)
+        self.resolve_users(person_ids([row], self.discover()))
+        self.resolve_titles(self.relation_urls([row], self.discover()))
+        return to_page(row, self.discover(), self._users, self._titles)
 
     def body_lines(self, page_id):
         text = self._fetch_page(page_id)

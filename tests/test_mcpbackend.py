@@ -105,3 +105,111 @@ class Client(unittest.TestCase):
         self.assertEqual(data["limit"], 30)
         self.assertEqual(data["filter"]["type"], "group")
         self.assertEqual(nt.page_title(res["results"][0]), "A")
+
+
+class People(unittest.TestCase):
+    def test_user_refs_resolve_to_names(self):
+        schema = mb.schema_from_state(STATE)
+        row = {"Name": "t", "Owner": "[\"user://u1\", \"user://u2\"]", "url": "https://x/p/1"}
+        self.assertEqual(mb.person_ids([row], schema), {"u1", "u2"})
+        page = mb.to_page(row, schema, {"u1": "Ada"})
+        self.assertEqual(nt.prop_text(page["properties"]["Owner"]), "Ada, (unknown user)")
+
+    def test_lookup_is_cached_and_failures_do_not_break_the_list(self):
+        class Fake:
+            def __init__(self):
+                self.calls = []
+
+            def call(self, name, args=None):
+                self.calls.append(args["user_id"])
+                if args["user_id"] == "bad":
+                    raise nt.NotionError("nope")
+                return {"results": [{"id": args["user_id"], "name": "Name " + args["user_id"]}]}
+
+        fake = Fake()
+        cl = mb.McpClient("ds", fake)
+        cl.resolve_users({"a", "bad"})
+        cl.resolve_users({"a", "bad"})
+        self.assertEqual(sorted(fake.calls), ["a", "bad"])
+        self.assertEqual((cl._users["a"], cl._users["bad"]), ("Name a", "(unknown user)"))
+
+
+class Relations(unittest.TestCase):
+    def test_relation_columns_show_the_target_titles(self):
+        state = {"name": "D", "schema": {"Name": {"name": "Name", "type": "title"},
+                                         "Assignee": {"name": "Assignee", "type": "relation"}}}
+        schema = mb.schema_from_state(state)
+
+        class Fake:
+            def call(self, name, args=None):
+                return {"title": "Ada \\[QA\\]", "text": ""}
+
+        cl = mb.McpClient("ds", Fake())
+        cl.want = {"Assignee"}
+        row = {"Name": "t", "Assignee": '["https://x/p/a?pvs=4"]', "url": "https://x/p/1"}
+        urls = cl.relation_urls([row], schema)
+        self.assertEqual(urls, {"https://x/p/a"})
+        cl.resolve_titles(urls)
+        page = mb.to_page(row, schema, {}, cl._titles)
+        self.assertEqual(nt.prop_text(page["properties"]["Assignee"]), "Ada [QA]")
+
+
+class Paging(unittest.TestCase):
+    STATE = {"name": "D", "schema": {"Name": {"name": "Name", "type": "title"},
+                                     "Updated at": {"name": "Updated at", "type": "last_edited_time"}}}
+
+    class Fake:
+        def __init__(self, days):
+            self.days, self.calls = days, []
+
+        def call(self, name, args=None):
+            d = args["data"]
+            self.calls.append(d)
+            ops = [f["operator"] for f in d.get("filter", {}).get("filters", [])]
+            rows = [r for r in self.days if True]
+            if "date_is_on_or_before" in ops:
+                day = d["filter"]["filters"][0]["value"]["value"]
+                rows = [r for r in rows if r["Updated at"][:10] <= day]
+            elif "date_is_before" in ops:
+                day = d["filter"]["filters"][0]["value"]["value"]
+                rows = [r for r in rows if r["Updated at"][:10] < day]
+            elif "date_is" in ops:
+                day = d["filter"]["filters"][0]["value"]["value"]
+                rows = [r for r in rows if r["Updated at"][:10] == day]
+            rows = sorted(rows, key=lambda r: r["Updated at"], reverse=d["sort"][0]["direction"] == "descending")
+            return {"results": rows[:d["limit"]]}
+
+    def make(self, n_by_day):
+        rows = []
+        for day, n in n_by_day.items():
+            rows += [{"Name": "%s-%d" % (day, i), "Updated at": "%sT%02d:%02d:00.000Z" % (day, i // 60, i % 60), "url": "u/%s/%d" % (day, i)} for i in range(n)]
+        cl = mb.McpClient("ds", self.Fake(rows))
+        cl._schema = mb.schema_from_state(self.STATE)
+        return cl
+
+    def walk(self, cl, pages=20):
+        seen, cursor, body = [], None, {"page_size": 5}
+        for _ in range(pages):
+            r = cl.query(body, cursor=cursor, seen=set(seen))
+            seen += [p["id"] for p in r["results"] if p["id"] not in seen]
+            if not r["has_more"]:
+                break
+            cursor = r["cursor"]
+        return seen
+
+    def test_walks_all_days_without_duplicates(self):
+        cl = self.make({"2026-10-30": 8, "2026-10-29": 3, "2026-10-28": 2})
+        seen = self.walk(cl)
+        self.assertEqual(len(seen), 13)
+        self.assertEqual(len(set(seen)), 13)
+
+    def test_a_day_larger_than_a_page_is_read_from_both_ends(self):
+        cl = self.make({"2026-10-30": 130, "2026-10-29": 4})
+        seen = self.walk(cl)
+        self.assertEqual(len(seen), 134)
+        self.assertEqual(len(set(seen)), 134)
+
+    def test_user_sort_disables_paging(self):
+        cl = self.make({"2026-10-30": 3})
+        r = cl.query({"sorts": [{"property": "Name", "direction": "ascending"}]})
+        self.assertFalse(r["has_more"])
