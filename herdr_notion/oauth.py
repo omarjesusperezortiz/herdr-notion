@@ -132,7 +132,18 @@ def load():
         return None
 
 
-def logout():
+def logout(revoke=True):
+    """Forget the login. Notion is told to revoke it first (best effort: offline still signs you out locally).
+    Returns True when there was a login to remove."""
+    data = load()
+    if data and revoke:
+        try:
+            meta = discover()
+            token = data.get("refresh_token") or data.get("access_token")
+            if meta.get("revocation_endpoint") and token:
+                _http(meta["revocation_endpoint"], {"token": token, "client_id": data["client_id"]}, method="POST", timeout=10)
+        except OAuthError:
+            pass
     try:
         os.remove(store_path())
         return True

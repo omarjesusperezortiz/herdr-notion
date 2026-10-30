@@ -39,6 +39,7 @@ class App:
         self.job_seq = 0
         self.onboarding = False
         self.picked_title, self.picked_tabs = "", []
+        self.want_quit = False
         self.delegations = self.load_delegations()  # page id -> {"pane", "agent", "title", "seen_working", "done"}
         self.finished = []  # page ids whose agent just went idle: the main loop offers to move them to review
         self.next_agent_poll = 0
@@ -646,7 +647,7 @@ class App:
             for i, item in enumerate(self.MENU):
                 line = "%s %d. %s" % ("❯" if i == sel else " ", i + 1, item)
                 self.scr.addnstr(y + i, 2, line, w - 4, curses.A_REVERSE if i == sel else 0)
-            self.scr.addnstr(min(y + len(self.MENU) + 1, h - 1), 2, "↑↓ move · Enter choose · 1-%d jump · Esc close" % len(self.MENU), w - 4, curses.A_DIM)
+            self.scr.addnstr(min(y + len(self.MENU) + 1, h - 1), 2, "↑↓ move · Enter or 1-%d choose · Esc close" % len(self.MENU), w - 4, curses.A_DIM)
             self.scr.refresh()
             k = self.scr.getch()
             if k in (27, ord("q")):
@@ -667,6 +668,8 @@ class App:
             action = (self.sign_in, self.change_database, self.change_status_property, self.reset_filters,
                       self.clear_sign_in, lambda: None)[sel]
             self.guard(action)
+            if self.want_quit or (sel == 4 and self.msg == "signed in again"):
+                return
             reason = self.msg if self.msg and self.connection_problem(self.msg) else ""
             self.reconnect = ""
             self.busy("Checking the connection…")
@@ -690,7 +693,33 @@ class App:
         self.msg = "filter tabs: %s" % ", ".join(f["name"] for f in flt)
 
     def clear_sign_in(self):
-        self.msg = "browser sign-in cleared" if oauth.logout() else "was not signed in"
+        """Sign out: revoke the login at Notion, drop what is loaded, and offer to sign in again."""
+        if not oauth.load():
+            self.msg = "was not signed in"
+            return
+        if not self.confirm("Sign out of Notion? The list closes until you sign in again."):
+            return
+        self.busy("Signing out…")
+        oauth.logout()
+        self.pages, self.cache, self.detail = [], {}, None
+        self.has_more, self.cursor, self.job = False, None, None
+        self.client = mb.McpClient(self.cfg["data_source_id"]) if self.cfg else self.client
+        self.client.want = set(self.cfg["columns"]) if self.cfg else set()
+        self.onboarding = True
+        try:
+            k = self.onboard(1, ["You are signed out. The login was revoked at Notion and removed from this machine.", "",
+                                 "Press Enter to sign in again (any account or workspace). Esc quits."])
+        finally:
+            self.onboarding = False
+        if k in (27, ord("q")):
+            self.want_quit = True
+            return
+        self.sign_in()
+        if oauth.load():
+            self.refresh_async("Loading…")
+            self.msg = "signed in again"
+        else:
+            self.want_quit = True
 
     def settings(self):
         self.connection()
@@ -1095,8 +1124,12 @@ class App:
         self.splash()
         while True:
             self.scr.timeout(-1)  # screens opened from here (connection, review offer) read keys in blocking mode
+            if self.want_quit:
+                return
             if self.reconnect:
                 self.connect_screen()
+                if self.want_quit:
+                    return
             self.poll_job()
             self.poll_agents()
             if self.finished:
@@ -1113,6 +1146,8 @@ class App:
                 if not self.detail_key(k):
                     continue
             elif self.list_key(k) is False:
+                return
+            if self.want_quit:
                 return
 
     def common_key(self, k):
