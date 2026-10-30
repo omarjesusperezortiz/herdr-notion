@@ -820,12 +820,25 @@ class App:
         sys.stdout.write("\x1b7\x1b[%d;%dH\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\\x1b8" % (y + 1, x + 1, url, text))
         sys.stdout.flush()
 
+    def copy_to_clipboard(self, text):
+        """Copy on this machine (pbcopy and friends) and, through the terminal (OSC 52), on the machine you are sitting at."""
+        import base64
+        try:
+            sys.stdout.write("\x1b]52;c;%s\x07" % base64.b64encode(text.encode()).decode())
+            sys.stdout.flush()
+        except OSError:
+            pass
+        argv = nt.clipboard_cmd(shutil.which)
+        if argv:
+            subprocess.run(argv, input=text.encode(), check=False)
+
     def sign_in(self):
-        """Sign in with the browser, inside the pane. The browser reaches a local address on this
-        machine; when it is on another machine, copy the link there and paste back the address it ends on."""
+        """Sign in with the browser, inside the pane. The page to open is Notion's own sign-in page, so it works
+        from any machine. When the browser runs on this machine the pane carries on by itself; otherwise the
+        browser ends on a page that will not load, and p takes that page's address."""
         flow = oauth.Flow()
         try:
-            webbrowser.open(flow.short)
+            webbrowser.open(flow.url)
         except Exception:
             pass
         res = None
@@ -839,39 +852,38 @@ class App:
                     break
                 h, w = self.scr.getmaxyx()
                 self.scr.erase()
+                width = max(w - 6, 10)
+                label = "Sign in with Notion  ↗"
                 rows = [("Sign in to Notion", curses.A_BOLD), ("─" * min(w - 4, 60), curses.A_DIM), ("", 0),
-                        ("1  Open the link below (Cmd/Ctrl+click) or press o.", 0), ("", 0), ("      " + flow.short, curses.A_BOLD), ("", 0),
-                        ("2  Choose a workspace and approve the connection.", 0),
-                        ("3  This screen carries on by itself.", 0), ("", 0),
-                        ("Browser on another machine?", curses.A_BOLD),
-                        ("   Press c to copy the full link, open it there, approve, then press p", 0),
-                        ("   and paste the address the browser ends on (the page will not load).", 0), ("", 0),
-                        (note, curses.A_BOLD if note else 0)]
-                for y, (line, attr) in enumerate(rows[:h - 3]):
+                        ("1  Open Notion's sign-in page (Cmd/Ctrl+click it, or press o):", 0), ("", 0),
+                        ("      " + label, curses.A_BOLD | curses.A_UNDERLINE), ("", 0),
+                        ("   or copy the address (press c) and paste it in any browser:", curses.A_DIM)]
+                rows += [("   " + flow.url[i:i + width], curses.A_DIM) for i in range(0, len(flow.url), width)]
+                rows += [("", 0), ("2  Choose a workspace and approve the connection.", 0),
+                         ("3  Browser on this machine: this screen carries on by itself.", 0),
+                         ("   Browser on another machine: it ends on a page that will not load.", 0),
+                         ("   Copy that page's address, press p here, and paste it.", 0), ("", 0),
+                         (note, curses.A_BOLD if note else 0)]
+                link_at = None
+                for y, (line, attr) in enumerate(rows[:h - 2]):
                     self.scr.addnstr(1 + y, 2, line, w - 3, attr)
-                    if line.strip() == flow.short:
+                    if line.strip() == label:
                         link_at = (1 + y, 8)
                 self.scr.addnstr(h - 1, 0, " o open   c copy link   p paste address   Esc cancel".ljust(w - 1), w - 1, curses.A_REVERSE)
                 self.scr.refresh()
-                try:
-                    self.link(link_at[0], link_at[1], flow.short, flow.short)
-                except NameError:
-                    pass
+                if link_at:
+                    self.link(link_at[0], link_at[1], label, flow.url)
                 k = self.scr.getch()
                 if k == 27:
                     flow.close()
                     self.msg = "sign-in cancelled"
                     return
                 if k == ord("o"):
-                    webbrowser.open(flow.short)
-                    note = "opened in the browser"
+                    webbrowser.open(flow.url)
+                    note = "opened in the browser on this machine"
                 elif k == ord("c"):
-                    argv = nt.clipboard_cmd(shutil.which)
-                    if argv:
-                        subprocess.run(argv, input=flow.url.encode(), check=False)
-                        note = "full link copied"
-                    else:
-                        note = "no clipboard tool found; use the link above"
+                    self.copy_to_clipboard(flow.url)
+                    note = "link copied: paste it in your browser's address bar"
                 elif k == ord("p"):
                     pasted = self.ask_paste("address: ")
                     self.scr.timeout(300)

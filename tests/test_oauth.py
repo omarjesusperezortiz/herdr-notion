@@ -61,6 +61,13 @@ class FixedAddress(unittest.TestCase):
             return oauth.Flow()
 
     def test_same_address_every_time_and_a_fallback_when_busy(self):
+        import socket
+        with socket.socket() as probe:  # a free port to stand in for the fixed one (the real one may be in use)
+            probe.bind(("127.0.0.1", 0))
+            free = probe.getsockname()[1]
+        patch = mock.patch.object(oauth, "PORT", free)
+        patch.start()
+        self.addCleanup(patch.stop)
         first = self.make()
         port = first.server.server_address[1]
         self.assertEqual(port, oauth.PORT)
