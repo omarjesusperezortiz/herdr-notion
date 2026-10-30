@@ -152,3 +152,42 @@ class Databases(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CommentText(unittest.TestCase):
+    RAW = ('<discussions><discussion id="d1"><comment id="c1" url="https://x/p/1?d=1" user-url="user://u1" datetime="2026-10-30T09:00:00.000Z">'
+           '<b>Title:</b> <br />Session does not appear<br /><br /><b>Steps:</b><br />1. Open <code>one_time_only</code>'
+           '</comment><comment id="c2" url="https://x/p/1?d=1" user-url="user://u1" datetime="2026-10-30T10:00:00.000Z">'
+           '<mention url="user://u2" /></comment></discussion></discussions>')
+
+    def client(self):
+        class Fake:
+            def call(self, name, args=None):
+                if name == "notion-get-users":
+                    return {"results": [{"id": args["user_id"], "name": {"u1": "Ada", "u2": "Grace"}[args["user_id"]]}]}
+                return {"text": CommentText.RAW}
+        return mb.McpClient("ds", Fake())
+
+    def test_formatting_tags_and_breaks_are_cleaned(self):
+        got = self.client().comments("https://x/p/1")
+        self.assertNotIn("<", got[0]["text"])
+        self.assertEqual(got[0]["text"].split("\n"), ["Title:", "Session does not appear", "", "Steps:", "1. Open one_time_only"])
+        self.assertIn("Title:", got[0]["text"])
+        self.assertIn("1. Open one_time_only", got[0]["text"])
+
+    def test_a_mention_reads_as_the_persons_name(self):
+        got = self.client().comments("https://x/p/1")
+        self.assertEqual(got[1]["text"], "@Grace")
+        self.assertEqual(got[1]["author"], "Ada")
+
+    def test_the_page_draws_comments_without_any_markup(self):
+        app, scr = make_app([dict(p) for p in PAGES], h=30, w=100)
+        app.client.comment_list = self.client().comments("https://x/p/1")
+        app.open_page(app.pages[0])
+        settle(app)
+        app.draw_detail()
+        text = scr.text()
+        self.assertIn("Comments (2)", text)
+        self.assertNotIn("<br", text)
+        self.assertNotIn("<b>", text)
+        self.assertIn("@Grace", text)

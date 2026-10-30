@@ -132,16 +132,12 @@ def suggest_filters(schema, status_prop, views=None, me_page=None):
     if mine:
         out.append({"name": "Mine", "filter": and_(mine, open_)})
     sprint = sprint_filter(schema)
-    if sprint:
-        out.append({"name": "Current sprint", "filter": and_(sprint, open_)})
-        if mine:
-            out.append({"name": "Mine · sprint", "filter": and_(mine, sprint, open_)})
+    if sprint:  # yours when we know who you are, the team's otherwise
+        out.append({"name": "Sprint", "filter": and_(mine, sprint, open_) if mine else and_(sprint, open_)})
     if open_:
         out.append({"name": "Open", "filter": open_})
     out.append({"name": "All"})
-    for v in (views or [])[:6]:  # the saved views of the database, as Notion shows them
-        out.append({"name": "▦ " + v["name"], "view": v["url"]})
-    return out
+    return out  # the saved views of the database are one key away (V), not more tabs
 
 
 def render_filters(filters):

@@ -53,7 +53,9 @@ def schema_from_state(state):
             props[name] = {"type": t, t: {"options": [{"id": o["name"], "name": o["name"]} for o in p.get("options", [])]}}
         elif t == "status":
             opts, groups = [], []
-            for key, items in (p.get("groups") or {}).items():
+            order = ["to_do", "in_progress", "complete"]  # the order of a Notion board: not started, started, finished
+            gs = p.get("groups") or {}
+            for key, items in [(k, gs[k]) for k in order if k in gs] + [(k, v) for k, v in gs.items() if k not in order]:
                 names = [o["name"] for o in items]
                 opts += [{"id": n, "name": n} for n in names]
                 if names:
@@ -426,17 +428,35 @@ class McpClient:
         return self.set_property(page_id, prop, option)
 
     def comments(self, page_id):
-        """[{id, author, when, text}] for the page-level comments, oldest first."""
+        """[{id, author, when, text}] for the page-level comments, oldest first. The text is plain: formatting tags
+        are dropped, <br /> becomes a line break and mentions of people read as @name."""
         res = self.call("notion-get-comments", {"page_id": page_id})
         text = res.get("text", "") if isinstance(res, dict) else str(res)
-        out = []
+        raw = []
         for attrs, body in re.findall(r"<comment\s+([^>]*)>(.*?)</comment>", text, re.S):
             a = dict(re.findall(r'([\w-]+)="([^"]*)"', attrs))
-            out.append({"id": a.get("id", ""), "author": uid(a.get("user-url", "")), "when": a.get("datetime", ""), "text": unescape(__import__("html").unescape(body.strip()))})
-        self.resolve_users({c["author"] for c in out if c["author"]})
-        for c in out:
-            c["author"] = self._users.get(c["author"], "someone")
+            raw.append((a, body))
+        ids = {uid(a.get("user-url", "")) for a, _ in raw if a.get("user-url")}
+        for _, body in raw:
+            ids.update(m for m in re.findall(r'<mention url="user://([^"]+)"', body))
+        self.resolve_users({i for i in ids if i})
+        out = [{"id": a.get("id", ""), "author": self._users.get(uid(a.get("user-url", "")), "someone"), "when": a.get("datetime", ""),
+                "text": self.plain_comment(body)} for a, body in raw]
         return sorted(out, key=lambda c: c["when"])
+
+    def plain_comment(self, body):
+        import html
+        body = re.sub(r'<mention url="user://([^"]+)"\s*/?>(?:</mention>)?', lambda m: "@" + self._users.get(m.group(1), "someone"), body)
+        body = re.sub(r"<mention[^>]*/>|<mention[^>]*>.*?</mention>", "(link)", body, flags=re.S)
+        body = re.sub(r"<br\s*/?>", "\n", body)
+        body = re.sub(r"</?(b|i|u|s|code|strong|em|span|del|ins)(\s[^>]*)?>", "", body)
+        body = re.sub(r"<[^>]+>", "", body)
+        lines = [unescape(html.unescape(l)).rstrip() for l in body.split("\n")]
+        out = []
+        for l in lines:  # no leading or doubled blank lines
+            if l or (out and out[-1]):
+                out.append(l)
+        return "\n".join(out).strip()
 
     def add_comment(self, page_id, text):
         self.call("notion-create-comment", {"page_id": page_id, "markdown": text})

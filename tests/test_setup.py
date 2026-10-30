@@ -116,7 +116,7 @@ class SuggestedFilters(unittest.TestCase):
     def test_sprint_tabs_only_when_the_database_has_one(self):
         schema = dict(SCHEMA, properties=dict(SCHEMA["properties"], **{"Current sprint?": {"type": "formula", "formula": {}}}))
         names = [f["name"] for f in setup.suggest_filters(schema, "State")]
-        self.assertEqual(names, ["Mine", "Current sprint", "Mine · sprint", "Open", "All"])
+        self.assertEqual(names, ["Mine", "Sprint", "Open", "All"])  # four tabs: the sprint tab is yours when we know who you are
 
     def test_plain_database_still_gets_all(self):
         self.assertEqual(setup.suggest_filters({"properties": {"Name": {"type": "title", "title": {}}}}, ""), [{"name": "All"}])
@@ -149,9 +149,11 @@ class MineAndViews(unittest.TestCase):
         self.assertEqual(flt[0]["name"], "Mine")
         self.assertEqual(flt[0]["filter"], {"property": "Assignee", "relation": {"contains": "https://x/p/me"}})
 
-    def test_views_become_tabs_after_the_filters(self):
-        flt = setup.suggest_filters({"properties": {}}, "", [{"name": "Board", "url": "https://x?v=1"}, {"name": "Done", "url": "https://x?v=2"}])
-        self.assertEqual([f["name"] for f in flt], ["All", "▦ Board", "▦ Done"])
-        text = setup.render_filters(flt)
+    def test_views_are_not_extra_tabs(self):
+        flt = setup.suggest_filters({"properties": {}}, "", [{"name": "Board", "url": "https://x?v=1"}])
+        self.assertEqual([f["name"] for f in flt], ["All"])  # they are one key away (V)
+
+    def test_a_tab_can_still_be_a_saved_view_in_the_config(self):
+        text = setup.render_filters([{"name": "All"}, {"name": "▦ Board", "view": "https://x?v=1"}])
         cfg = config.normalize(tomlcompat.loads('[notion]\ndata_source_id = "d"\n\n' + text))
         self.assertEqual(cfg["filters"][1]["view"], "https://x?v=1")

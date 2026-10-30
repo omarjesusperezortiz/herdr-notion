@@ -115,8 +115,10 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | Esc | clears the search and the status filter; quits when nothing is left to clear |
 | `F` | show one status only (among the loaded pages) |
 | `V` | open one of the database's Notion views as a tab: its filters, its order, real paging |
-| `J` / `K`, Space, `b` | scroll the preview pane / page through the list |
-| `O` / `g` | sort (newest edit, title, status) / group the rows by status |
+| Tab | in a wide pane, hand the arrow keys to the preview: ↑↓, PgUp/PgDn, `g`/`G` scroll it; Tab, Esc or ← give them back |
+| ← → (or `h` `l`) | previous / next tab |
+| `J` / `K`, Space, `b` | scroll the preview a few lines / page through the list |
+| `O` / `g` | sort (newest edit, title, status) / group the rows by status, in the order the status options have in Notion (to do, in progress, done). Set `group_order = ["In progress", "To do"]` under `[notion]` to put some first |
 | `s` | change status: pick an option, then confirm with `y` |
 | `d` | delegate: pick a running agent (status, cwd) or **+ start new agent…**, then the prompt is sent |
 | `o` | open the page in the browser |

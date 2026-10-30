@@ -23,7 +23,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm)"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("F", "show one status only"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm)"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("F", "show one status only"), ("Tab", "scroll the preview (arrows, PgUp/PgDn, Tab to leave)"), ("← →, h l", "previous / next tab"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -55,6 +55,8 @@ class App:
         self.live = ""  # type-ahead text (filters the loaded pages as you type)
         self.status_filter = ""  # show only this status
         self.pscroll = 0  # scroll offset of the preview pane
+        self.focus = "list"  # "preview" while the arrow keys scroll the preview pane
+        self.status_order = {}  # status name -> position (the order of the options in Notion, or group_order)
         self.has_more = False
         self.cursor = None
         self.query_body = {}
@@ -152,8 +154,23 @@ class App:
             return {"view_url": flt["view"], "page_size": self.cfg["page_size"]}
         return nt.build_query(flt, self.query, self.title_prop, "me", self.cfg["page_size"])
 
+    def set_status_order(self, schema):
+        """Order of the statuses for sorting and grouping: the order of the options in Notion (not started, started,
+        finished, as on a board), unless `group_order` in the config says otherwise."""
+        try:
+            opts = nt.status_options(schema, self.cfg["status_property"])[1]
+        except nt.NotionError:
+            opts = []
+        order = list(self.cfg.get("group_order") or []) + [o for o in opts if o not in (self.cfg.get("group_order") or [])]
+        self.status_order = {n: i for i, n in enumerate(order)}
+
+    def status_rank(self, page):
+        text = nt.prop_text(page["properties"].get(self.cfg["status_property"]))
+        return (self.status_order.get(text, 999), text.lower())
+
     def apply_list(self, schema, body, res):
         self.groups = nt.status_groups(schema, self.cfg["status_property"])
+        self.set_status_order(schema)
         self.query_body = body
         self.all = res.get("results", [])
         self.live = ""
@@ -267,7 +284,6 @@ class App:
         """Order the loaded pages (and group them by status) while keeping the selection on the same page."""
         sid = self.pages[self.sel]["id"] if self.pages and self.sel < len(self.pages) else None
         mode = self.SORTS[self.sort_mode][0]
-        stext = lambda p: nt.prop_text(p["properties"].get(self.cfg["status_property"])).lower()
         if self.on_view_tab() and not self.sort_mode and not self.group:  # keep the order the view has in Notion
             self.pages = [p for p in self.all if self.matches(p)]
             self.sel = next((i for i, p in enumerate(self.pages) if p["id"] == sid), 0) if sid else 0
@@ -275,11 +291,11 @@ class App:
         if mode == "title":
             self.all.sort(key=lambda p: nt.page_title(p).lower())
         elif mode == "status":
-            self.all.sort(key=lambda p: (self.KIND_RANK[self.status_kind(p)], stext(p)))
+            self.all.sort(key=self.status_rank)
         else:
             self.all.sort(key=lambda p: p.get("last_edited_time") or "", reverse=True)
         if self.group:  # stable: keeps the chosen order inside each group
-            self.all.sort(key=lambda p: (self.KIND_RANK[self.status_kind(p)], stext(p)))
+            self.all.sort(key=self.status_rank)
         self.pages = [p for p in self.all if self.matches(p)]
         self.sel = next((i for i, p in enumerate(self.pages) if p["id"] == sid), 0) if sid else 0
 
@@ -345,6 +361,8 @@ class App:
         cur = self.pages[self.sel]["id"] if self.pages and self.sel < len(self.pages) else None
         if cur != self.sel_id:
             self.sel_id, self.sel_changed, self.pscroll = cur, time.time(), 0
+            if cur is None:
+                self.focus = "list"
 
     def maybe_preview(self):
         """In a wide pane, fetch the body of the selected page once the selection has rested for a moment."""
@@ -490,9 +508,10 @@ class App:
         for piece, attr in wrapped[self.pscroll:self.pscroll + room]:
             self.scr.addnstr(y, x0, piece, width, attr)
             y += 1
-        if len(wrapped) > room:  # where we are in the page
+        if len(wrapped) > room:  # where we are in the page, and how to scroll it
             mark = "%d%%" % min(100, 100 * (self.pscroll + room) // len(wrapped))
-            self.scr.addnstr(bottom - 1, x0 + width - len(mark), mark, len(mark), curses.A_DIM | curses.A_BOLD)
+            hint = ("↑↓ scroll · Tab back · " if self.focus == "preview" else "Tab: scroll this page · ") + mark
+            self.scr.addnstr(bottom - 1, max(x0, x0 + width - len(hint)), hint, min(len(hint), width), curses.A_DIM | curses.A_BOLD)
 
     def draw_list(self):
         h, w = self.scr.getmaxyx()
@@ -558,7 +577,7 @@ class App:
             self.scr.addnstr(4, 2, "No pages match this filter.", tw_total - 3, curses.A_DIM)
         if wide:
             for y in range(2, h - 3):
-                self.scr.addnstr(y, tw_total, "│", 1, curses.A_DIM)
+                self.scr.addnstr(y, tw_total, "┃" if self.focus == "preview" else "│", 1, self.cp(2) | curses.A_BOLD if self.focus == "preview" else curses.A_DIM)
             self.draw_preview(tw_total + 2, w - tw_total - 3, 3, h - 3)
         if peek and self.pages:
             self.rule(h - 3 - peek, w)
@@ -573,8 +592,9 @@ class App:
                 facts.append("agent " + cell[0])
             self.scr.addnstr(h - 4, 2, "  ·  ".join(facts), w - 3, curses.A_DIM)
         self.rule(h - 3, w)
-        self.footer([("⏎", "open"), ("s", "status"), ("d", "delegate"), ("f", "filters"), ("/", "search"),
-                     ("e", "edit"), ("n", "new"), ("?", "more")])
+        self.footer([("↑↓/PgUp PgDn", "scroll"), ("Tab", "back to the list"), ("⏎", "open")] if self.focus == "preview" else
+                    [("⏎", "open"), ("s", "status"), ("d", "delegate"), ("←→", "tabs"), ("/", "search")]
+                    + ([("Tab", "scroll preview")] if wide else []) + [("e", "edit"), ("n", "new"), ("?", "more")])
 
     def draw_detail(self):
         h, w = self.scr.getmaxyx()
@@ -611,8 +631,9 @@ class App:
             for c_ in comments:
                 head = "%s · %s" % (c_["author"], nt.relative_time(c_["when"]))
                 lines.append((" " + head, self.cp(1) | curses.A_BOLD))
-                for piece in (textwrap.wrap(c_["text"], max(w - 5, 10)) or [""]):
-                    lines.append(("   " + piece, 0))
+                for para in (c_["text"].split("\n") or [""]):
+                    for piece in (textwrap.wrap(para, max(w - 5, 10)) or [""]):
+                        lines.append(("   " + piece, 0))
         view = h - 5
         self.dscroll = max(0, min(self.dscroll, max(0, len(lines) - view)))
         for r, (l, attr) in enumerate(lines[self.dscroll:self.dscroll + view]):
@@ -1790,6 +1811,15 @@ class App:
     def list_key(self, k):
         self.msg = "" if k != -1 else self.msg
         n = len(self.pages)
+        if self.focus == "preview":
+            return self.preview_key(k)
+        if k == 9 and self.wide() and self.pages:  # Tab: the arrow keys now scroll the preview
+            self.focus = "preview"
+            return True
+        if k in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("h"), ord("l")) and len(self.cfg["filters"]) > 1:
+            step = 1 if k in (curses.KEY_RIGHT, ord("l")) else -1
+            self.pick_filter((self.fidx + step) % len(self.cfg["filters"]))
+            return True
         if k == 27 and (self.query or self.live or self.status_filter):
             self.clear_filters()
             return True
@@ -1841,6 +1871,28 @@ class App:
             self.refresh_async("Reloading…")
         else:
             self.common_key(k)
+        return True
+
+    def preview_key(self, k):
+        """Keys while the preview pane has the focus: scroll it; Tab, Esc or the left arrow hand the focus back."""
+        page = max(3, self.scr.getmaxyx()[0] - 8)
+        if k in (9, 27, curses.KEY_LEFT, ord("h"), ord("q")):
+            self.focus = "list"
+        elif k in (curses.KEY_DOWN, ord("j")):
+            self.pscroll += 1
+        elif k in (curses.KEY_UP, ord("k")):
+            self.pscroll = max(0, self.pscroll - 1)
+        elif k in (curses.KEY_NPAGE, ord(" "), ord("J")):
+            self.pscroll += page
+        elif k in (curses.KEY_PPAGE, ord("b"), ord("K")):
+            self.pscroll = max(0, self.pscroll - page)
+        elif k == ord("g"):
+            self.pscroll = 0
+        elif k == ord("G"):
+            self.pscroll = 10 ** 9
+        elif k in (10, 13, curses.KEY_ENTER) and self.pages:
+            self.focus = "list"
+            self.guard(self.open_page, self.pages[self.sel])
         return True
 
     def detail_key(self, k):

@@ -127,9 +127,10 @@ class Ordering(unittest.TestCase):
         app.sort_mode = 1
         app.apply_sort()
         self.assertEqual(titles(app), ["Alpha", "Bravo", "Charlie", "Delta", "Révision du menú"])
-        app.sort_mode = 2
+        app.sort_mode = 2  # the order of the options in Notion: To do, In progress, Review, Done
         app.apply_sort()
-        self.assertEqual(titles(app)[0], "Charlie")
+        self.assertEqual(titles(app)[:2], ["Bravo", "Delta"])
+        self.assertEqual(titles(app)[-1], "Alpha")
 
     def test_groups_have_headers_with_counts(self):
         app, scr = make_app([dict(p) for p in PAGES], h=28, w=90)
@@ -227,3 +228,69 @@ class Views(unittest.TestCase):
         n = len(app.cfg["filters"])
         app.pick_view()
         self.assertEqual(len(app.cfg["filters"]), n)
+
+
+class GroupOrder(unittest.TestCase):
+    def headers(self, app):
+        return [text for kind, text in app.build_display() if kind == "h"]
+
+    def test_groups_follow_the_order_of_the_status_options_in_notion(self):
+        app, _ = make_app([dict(p) for p in PAGES])
+        app.group = True
+        app.apply_sort()
+        self.assertEqual([h.split(" (")[0][2:] for h in self.headers(app)], ["To do", "In progress", "Review", "Done"])
+
+    def test_group_order_in_the_config_wins(self):
+        app, _ = make_app([dict(p) for p in PAGES])
+        app.cfg["group_order"] = ["Review", "In progress"]
+        app.set_status_order(app.client.discover())
+        app.group = True
+        app.apply_sort()
+        self.assertEqual([h.split(" (")[0][2:] for h in self.headers(app)], ["Review", "In progress", "To do", "Done"])
+
+
+class Focus(unittest.TestCase):
+    def wide_app(self):
+        app, scr = make_app([dict(p) for p in PAGES], h=16, w=150)
+        app.cache[app.pages[0]["id"]] = ["line %02d" % i for i in range(60)]
+        return app, scr
+
+    def test_tab_gives_the_arrow_keys_to_the_preview(self):
+        app, scr = self.wide_app()
+        app.draw_list()
+        self.assertTrue(scr.has("Tab: scroll this page"))
+        app.list_key(9)
+        self.assertEqual(app.focus, "preview")
+        sel = app.sel
+        for _ in range(5):
+            app.list_key(curses_key("DOWN"))
+        self.assertEqual(app.sel, sel)          # the list did not move
+        self.assertEqual(app.pscroll, 5)        # the preview did
+        app.draw_list()
+        self.assertFalse(scr.has("line 00"))
+        self.assertTrue(scr.has("Tab back"))
+        app.list_key(curses_key("NPAGE"))
+        self.assertGreater(app.pscroll, 5)
+        app.list_key(9)
+        self.assertEqual(app.focus, "list")
+
+    def test_esc_returns_to_the_list_not_out_of_the_app(self):
+        app, _ = self.wide_app()
+        app.list_key(9)
+        self.assertTrue(app.list_key(27))
+        self.assertEqual(app.focus, "list")
+
+    def test_tab_does_nothing_without_a_preview(self):
+        app, _ = make_app([dict(p) for p in PAGES], h=20, w=90)
+        app.list_key(9)
+        self.assertEqual(app.focus, "list")
+
+
+class Tabs(unittest.TestCase):
+    def test_left_and_right_cycle_the_tabs(self):
+        app, _ = make_app([dict(p) for p in PAGES])
+        seen = []
+        app.pick_filter = lambda idx=None: seen.append(idx)
+        app.list_key(curses_key("RIGHT"))
+        app.list_key(curses_key("LEFT"))
+        self.assertEqual(seen, [1, 1])  # two tabs: next and previous both land on the other one
