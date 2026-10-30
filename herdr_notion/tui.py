@@ -63,6 +63,8 @@ class App:
             return fn(*a)
         except (nt.NotionError, dg.HerdrError, cfgmod.ConfigError) as e:
             self.msg = str(e)
+            if "Could not find" in self.msg:  # the token cannot see the configured database
+                self.msg = "This token cannot see the configured database. Press S, then b, to pick another."
         return None
 
     # ------------------------------------------------------------ data
@@ -467,8 +469,18 @@ class App:
         cfgmod.save_token(token)
         self.client = nt.Client(cfgmod.resolve_token(self.cfg), self.cfg["database_id"], self.cfg["data_source_id"])
         self.cache = {}
-        self.refresh()
         over, who = cfgmod.token_override(self.cfg), me.get("name") or "the integration"
+        try:
+            self.refresh()
+        except nt.NotionError as e:
+            if "Could not find" not in str(e):
+                raise
+            self.msg = ""
+            if self.confirm("Token saved for %s, but it cannot see the current database. Pick another now? [y/N]" % who):
+                self.change_database()
+            else:
+                self.msg = "token saved; press S, then b, to pick a database it can see"
+            return
         self.msg = ("token saved for %s, but %s still takes precedence" % (who, over)
                     if over else "token saved for %s" % who)
 
@@ -526,6 +538,7 @@ class App:
             if len(options) == 1:
                 status_prop = options[0]
             elif options:
+                self.show(["Connected as %s" % name, "", "Pick the status property."], key=False)
                 j = self.popup("Which property is the status?", [st.property_label(schema, o) for o in options])
                 if j is None:
                     return None
