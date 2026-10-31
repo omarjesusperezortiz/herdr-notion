@@ -124,7 +124,6 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `M` | mouse on/off: click a row (twice opens it), a tab or a status chip; the wheel scrolls the pane under the pointer |
 | `V` | open one of the database's Notion views as a tab: its filters, its order, real paging |
 | `→` / `←` | `→` goes into the preview (↑↓, PgUp/PgDn, `g`/`G` scroll it) or opens the page when the pane has no preview; `←` comes back. Space and `b` scroll the preview without going in |
-| ← → (or `h` `l`) | previous / next tab |
 | `J` / `K`, Space, `b` | scroll the preview a few lines / page through the list |
 | `O` / `g` | sort (newest edit, title, status) / group the rows by status, in the order the status options have in Notion (to do, in progress, done). Set `group_order = ["In progress", "To do"]` under `[notion]` to put some first |
 | `s` | change status: pick an option, then confirm with `y` |
