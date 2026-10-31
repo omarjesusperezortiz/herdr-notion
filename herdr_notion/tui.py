@@ -24,7 +24,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm)"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab", "give the arrows to the preview (optional: Space/b already scroll it)"), ("← →, h l", "previous / next tab"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab", "give the arrows to the preview (optional: Space/b already scroll it)"), ("← →, h l", "previous / next tab"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -56,6 +56,8 @@ class App:
         self.live = ""  # type-ahead text (filters the loaded pages as you type)
         self.status_filter = ""  # show only this status
         self.pscroll = 0  # scroll offset of the preview pane
+        self.marked = set()  # page ids chosen with x for a bulk status change
+        self.advance_ok = False  # the > key asks to confirm only the first time
         self.compact = False  # z: bar only, no status column (the table shows the status word on every row)
         self.hits = []  # clickable regions of the last drawing: (y, x0, x1, action, argument)
         self.focus = "list"  # "preview" while the arrow keys scroll the preview pane
@@ -622,7 +624,9 @@ class App:
             bar = self.kind_attr(kind_) if not (on and kind_ == "todo") else 0
             self.scr.addnstr(y, 0, "▌", 1, (curses.A_BOLD if on else base) | bar)
             self.hits.append((y, 0, tw_total, "row", i))
-            if self.unread(pg):
+            if pg["id"] in self.marked:
+                self.scr.addnstr(y, 1, "+", 1, base | curses.A_BOLD)
+            elif self.unread(pg):
                 self.scr.addnstr(y, 1, "•", 1, base | self.cp(3) | curses.A_BOLD)
             self.scr.addstr(y, 2, nt.clip(nt.page_title(pg), tw), base | (curses.A_BOLD if on else 0))
             x = 2 + tw
@@ -836,23 +840,67 @@ class App:
 
     # ------------------------------------------------------------ actions
     def change_status(self):
+        """s: set the status of the current page, or of every marked page (x marks) with one confirm."""
+        marked = [p for p in self.all if p["id"] in self.marked] if not self.detail else []
         page = self.current()
-        if not page:
+        if not page and not marked:
             return
         prop = self.cfg["status_property"]
         kind, options = nt.status_options(self.client.discover(), prop)
-        i = self.popup("Set %s" % prop, options)
+        many = "%d pages" % len(marked) if len(marked) > 1 else ""
+        i = self.popup("Set %s%s" % (prop, " on " + many if many else ""), options)
         if i is None:
             return
-        if not self.confirm("Set %s to '%s'?" % (prop, options[i])):
+        if not self.confirm("Set %s to '%s'%s?" % (prop, options[i], " on " + many if many else "")):
             self.msg = "cancelled"
             return
-        self.busy("Updating…")
+        if marked:
+            done = 0
+            for n, p in enumerate(marked):
+                self.note("Updating %d of %d…" % (n + 1, len(marked)))
+                self.replace_page(self.client.set_status(p["id"], prop, kind, options[i]))
+                self.marked.discard(p["id"])
+                done += 1
+            self.msg = "%s set to %s on %d page%s" % (prop, options[i], done, "" if done == 1 else "s")
+            return
+        self.note("Updating…")
         updated = self.client.set_status(page["id"], prop, kind, options[i])
         self.replace_page(updated)
         if self.detail:
             self.open_page(updated)
         self.msg = "%s set to %s · press d to delegate it" % (prop, options[i])
+
+    def advance_status(self):
+        """>: move the current page to the next status of the property (To do, In progress, Done…)."""
+        page = self.current()
+        if not page:
+            return
+        prop = self.cfg["status_property"]
+        kind, options = nt.status_options(self.client.discover(), prop)
+        now = nt.prop_text(page["properties"].get(prop))
+        i = options.index(now) + 1 if now in options else 0
+        if i >= len(options):
+            self.msg = "already at the last status (%s)" % now
+            return
+        if not self.advance_ok and not self.confirm("Move to '%s'? (asked once, then > just does it)" % options[i]):
+            self.msg = "cancelled"
+            return
+        self.advance_ok = True
+        self.note("Updating…")
+        updated = self.client.set_status(page["id"], prop, kind, options[i])
+        self.replace_page(updated)
+        if self.detail:
+            self.open_page(updated)
+        self.msg = "%s: %s → %s" % (nt.page_title(page)[:30], now or "none", options[i])
+
+    def toggle_mark(self):
+        """x: mark or unmark the current page for a bulk status change, then move down."""
+        page = self.current()
+        if not page:
+            return
+        self.marked ^= {page["id"]}
+        self.sel = min(self.sel + 1, len(self.pages) - 1)
+        self.msg = "%d marked: s sets their status, Esc clears" % len(self.marked) if self.marked else "no pages marked"
 
     def build_prompt(self):
         """(page, rendered prompt) for the current page, fetching the body if needed."""
@@ -1979,6 +2027,8 @@ class App:
             self.guard(self.change_status)
         elif k == ord("d"):
             self.guard(self.delegate)
+        elif k == ord(">"):
+            self.guard(self.advance_status)
         elif k == ord("o"):
             page = self.current()
             if page:
@@ -2006,6 +2056,10 @@ class App:
         if k in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("h"), ord("l")) and len(self.cfg["filters"]) > 1:
             step = 1 if k in (curses.KEY_RIGHT, ord("l")) else -1
             self.pick_filter((self.fidx + step) % len(self.cfg["filters"]))
+            return True
+        if k == 27 and self.marked:
+            self.marked.clear()
+            self.msg = "marks cleared"
             return True
         if k == 27 and (self.query or self.live or self.status_filter):
             self.clear_filters()
@@ -2045,6 +2099,8 @@ class App:
             self.msg = "showing every status"
         elif k == ord("V"):
             self.guard(self.pick_view)
+        elif k == ord("x"):
+            self.toggle_mark()
         elif k == ord("+"):
             self.guard(self.save_view_as_tab)
         elif k == ord("T"):

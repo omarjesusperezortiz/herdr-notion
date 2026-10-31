@@ -1,4 +1,5 @@
 """Tests for the UI tasks in TASKS.md, driving the real screens on a fake terminal."""
+import copy
 import unittest
 
 from herdr_notion import notion as nt
@@ -10,7 +11,7 @@ PAGES = [page(0, "Bravo", "To do", "Low", "2026-10-01T00:00:00Z"), page(1, "Alph
 
 
 def fresh(**kw):
-    return make_app([dict(p) for p in PAGES], **kw)
+    return make_app(copy.deepcopy(PAGES), **kw)
 
 
 def titles(app):
@@ -260,3 +261,73 @@ class CustomTabs(unittest.TestCase):
         app.popup = lambda title, items, start=0: seen.setdefault("title", title) and None
         app.list_key(ord(":"))
         self.assertEqual(seen["title"], "Commands")
+
+
+class BulkAndAdvance(unittest.TestCase):
+    def app(self, confirm=True):
+        app, scr = fresh(h=28, w=100)
+        app.confirm = lambda text: confirm
+        return app, scr
+
+    def test_marking_moves_down_and_shows_a_plus(self):
+        app, scr = self.app()
+        first = app.pages[0]["id"]
+        app.list_key(ord("x"))
+        self.assertEqual(app.marked, {first})
+        self.assertEqual(app.sel, 1)
+        app.draw_list()
+        self.assertEqual(scr.row(3)[1], "+")
+        self.assertIn("1 marked", app.msg)
+
+    def test_s_on_marked_pages_asks_once_and_writes_each(self):
+        app, scr = self.app()
+        for _ in range(3):
+            app.list_key(ord("x"))
+        asked = []
+        app.confirm = lambda text: asked.append(text) or True
+        app.popup = lambda title, items, start=0: (asked.append(title), items.index("Done"))[1]
+        app.list_key(ord("s"))
+        self.assertEqual(len(app.client.writes), 3)
+        self.assertEqual({w[2] for w in app.client.writes}, {"Done"})
+        self.assertEqual(len([a for a in asked if "3 pages" in a]), 2)  # popup title and the one confirm
+        self.assertEqual(app.marked, set())
+        self.assertIn("3 pages", app.msg)
+
+    def test_declining_the_bulk_confirm_writes_nothing_and_keeps_the_marks(self):
+        app, scr = self.app(confirm=False)
+        app.list_key(ord("x"))
+        app.list_key(ord("x"))
+        app.popup = lambda title, items, start=0: 0
+        app.list_key(ord("s"))
+        self.assertEqual(app.client.writes, [])
+        self.assertEqual(len(app.marked), 2)
+
+    def test_esc_clears_marks_before_anything_else(self):
+        app, scr = self.app()
+        app.list_key(ord("x"))
+        self.assertTrue(app.list_key(27))
+        self.assertEqual(app.marked, set())
+
+    def test_advance_moves_to_the_next_option_and_asks_only_the_first_time(self):
+        app, scr = self.app()
+        confirms = []
+        app.confirm = lambda text: confirms.append(text) or True
+        app.sel = next(i for i, p in enumerate(app.pages) if nt.page_title(p) == "Bravo")  # To do
+        app.list_key(ord(">"))
+        self.assertEqual(app.client.writes[-1], ("status", "p0", "In progress"))
+        app.list_key(ord(">"))
+        self.assertEqual(app.client.writes[-1], ("status", "p0", "Review"))
+        self.assertEqual(len(confirms), 1)
+
+    def test_advance_declined_writes_nothing(self):
+        app, scr = self.app(confirm=False)
+        app.list_key(ord(">"))
+        self.assertEqual(app.client.writes, [])
+        self.assertEqual(app.msg, "cancelled")
+
+    def test_advance_stops_at_the_last_status(self):
+        app, scr = self.app()
+        app.sel = next(i for i, p in enumerate(app.pages) if nt.page_title(p) == "Alpha")  # Done
+        app.list_key(ord(">"))
+        self.assertEqual(app.client.writes, [])
+        self.assertIn("last status", app.msg)
