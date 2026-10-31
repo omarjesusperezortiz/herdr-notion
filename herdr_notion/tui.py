@@ -23,7 +23,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm)"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab", "give the arrows to the preview (optional: Space/b already scroll it)"), ("← →, h l", "previous / next tab"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm)"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab", "give the arrows to the preview (optional: Space/b already scroll it)"), ("← →, h l", "previous / next tab"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -55,6 +55,7 @@ class App:
         self.live = ""  # type-ahead text (filters the loaded pages as you type)
         self.status_filter = ""  # show only this status
         self.pscroll = 0  # scroll offset of the preview pane
+        self.compact = False  # z: bar only, no status column (the table shows the status word on every row)
         self.hits = []  # clickable regions of the last drawing: (y, x0, x1, action, argument)
         self.focus = "list"  # "preview" while the arrow keys scroll the preview pane
         self.status_order = {}  # status name -> position (the order of the options in Notion, or group_order)
@@ -419,6 +420,8 @@ class App:
 
     def init_colors(self):
         self.colors = False
+        if os.environ.get("NO_COLOR"):  # the markers (▌ ○ ◐ ✓) still carry the meaning
+            return
         try:
             curses.start_color()
             curses.use_default_colors()
@@ -426,9 +429,12 @@ class App:
             curses.init_pair(2, curses.COLOR_CYAN, -1)
             curses.init_pair(3, curses.COLOR_GREEN, -1)
             curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_CYAN)  # active tab
+            curses.init_pair(5, curses.COLOR_RED, -1)  # urgent
             self.colors = True
         except curses.error:
             pass
+
+    URGENT = ("urgent", "high", "critical", "p0", "p1", "blocker")
 
     def kind_attr(self, kind):
         """Display attribute for a status kind: to do is quiet, in progress yellow, done green."""
@@ -586,7 +592,7 @@ class App:
         # Columns right of the title, in priority order: status, other columns, edited.
         # They are dropped from the right until the title has at least 20 columns.
         extra = [c for c in self.cfg["columns"] if c != self.cfg["status_property"]]
-        cols = [("STATUS", 14)] + [(c.upper(), min(14, max(len(c), 6))) for c in extra] \
+        cols = ([] if self.compact else [("STATUS", 14)]) + [(c.upper(), min(14, max(len(c), 6))) for c in extra] \
             + ([("AGENT", 12)] if any(p["id"] in self.delegations for p in self.pages) else []) + [("EDITED", 6)]
         while cols and tw_total - 4 - sum(cw + 2 for _, cw in cols) < 20:
             cols.pop()
@@ -611,7 +617,10 @@ class App:
             on = i == self.sel
             base = curses.A_REVERSE if on else (curses.A_DIM if stale else 0)
             self.scr.addnstr(y, 0, " " * (tw_total - 1), tw_total - 1, base)
-            self.scr.addnstr(y, 0, "▌" if on else " ", 1, base | self.cp(2))
+            kind_ = self.status_kind(pg)
+            bar = self.kind_attr(kind_) if not (on and kind_ == "todo") else 0
+            self.scr.addnstr(y, 0, "▌", 1, (curses.A_BOLD if on else base) | bar)
+            self.hits.append((y, 0, tw_total, "row", i))
             if self.unread(pg):
                 self.scr.addnstr(y, 1, "•", 1, base | self.cp(3) | curses.A_BOLD)
             self.scr.addstr(y, 2, nt.clip(nt.page_title(pg), tw), base | (curses.A_BOLD if on else 0))
@@ -629,7 +638,9 @@ class App:
                         self.scr.addstr(y, x, nt.clip(cell[0], cw), base | cell[1])
                 else:
                     key = next(c for c in extra if c.upper() == n)
-                    self.scr.addstr(y, x, nt.clip(nt.prop_text(pg["properties"].get(key)), cw), base)
+                    text = nt.prop_text(pg["properties"].get(key))
+                    hot = self.cp(5) | curses.A_BOLD if text.lower() in self.URGENT else 0
+                    self.scr.addstr(y, x, nt.clip(text, cw), base | hot)
                 x += cw
         if not self.pages and self.job:
             for r in range(min(rows, 8)):  # skeleton rows while the first page loads
@@ -657,7 +668,7 @@ class App:
         self.rule(h - 3, w)
         self.footer([("↑↓/PgUp PgDn", "scroll"), ("Tab", "back to the list"), ("⏎", "open")] if self.focus == "preview" else
                     [("⏎", "open"), ("s", "status"), ("d", "delegate"), ("←→", "tabs"), ("/", "search")]
-                    + ([("Space/b", "scroll preview")] if wide else []) + [("e", "edit"), ("n", "new"), ("?", "more")])
+                    + ([("Space/b", "scroll preview")] if wide else []) + [("e", "edit"), ("z", "compact"), ("n", "new"), ("?", "more")])
 
     def draw_detail(self):
         h, w = self.scr.getmaxyx()
@@ -1921,6 +1932,9 @@ class App:
             self.msg = "showing every status"
         elif k == ord("V"):
             self.guard(self.pick_view)
+        elif k == ord("z"):
+            self.compact = not self.compact
+            self.msg = "compact: the colored bar shows the status" if self.compact else "table: status word on every row"
         elif k == ord("n"):
             self.guard(self.new_page)
         elif k == ord("D"):

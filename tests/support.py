@@ -13,6 +13,7 @@ class FakeScreen:
     # drawing
     def erase(self):
         self.grid = [[" "] * self.w for _ in range(self.h)]
+        self.attrs = [[0] * self.w for _ in range(self.h)]
 
     clear = erase
 
@@ -20,6 +21,7 @@ class FakeScreen:
         for i, ch in enumerate(str(text)[:max(n, 0)]):
             if 0 <= y < self.h and 0 <= x + i < self.w:
                 self.grid[y][x + i] = ch
+                self.attrs[y][x + i] = attr
 
     def addstr(self, y, x, text, attr=0):
         self.addnstr(y, x, text, len(str(text)), attr)
@@ -47,6 +49,17 @@ class FakeScreen:
 
     def text(self):
         return "\n".join(self.row(y) for y in range(self.h))
+
+    def attr_at(self, y, x):
+        return self.attrs[y][x]
+
+    def find(self, needle):
+        """(y, x) of the first place `needle` is drawn, or None."""
+        for y in range(self.h):
+            x = self.row(y).find(needle)
+            if x >= 0:
+                return y, x
+        return None
 
     def has(self, needle):
         return needle in self.text()

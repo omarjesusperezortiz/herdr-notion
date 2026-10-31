@@ -103,3 +103,65 @@ class StatusChips(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Density(unittest.TestCase):
+    def test_table_shows_the_status_word_on_every_row_and_compact_does_not(self):
+        app, scr = fresh(h=28, w=100)
+        app.draw_list()
+        self.assertTrue(scr.has("STATUS"))
+        rows = lambda: "\n".join(scr.row(y) for y in range(3, 12))
+        self.assertIn("✓ Done", rows())
+        app.list_key(ord("z"))
+        self.assertTrue(app.compact)
+        app.draw_list()
+        self.assertFalse(scr.has("STATUS"))
+        self.assertNotIn("✓ Done", rows())
+
+    def test_compact_gives_the_title_more_room(self):
+        long_title = "A very long ticket title about the signup redirect loop on Safari seventeen"
+        pages = [page(0, long_title, "To do", "Low")]
+        app, scr = make_app(pages, h=28, w=90)
+        app.draw_list()
+        before = scr.row(3)
+        app.compact = True
+        app.draw_list()
+        shown = lambda row: row[row.index("A very"):].split("  ")[0]
+        self.assertGreater(len(shown(scr.row(3))), len(shown(before)))
+
+    def test_every_row_has_a_bar_and_the_selected_status_is_still_named(self):
+        app, scr = fresh(h=28, w=100)
+        app.compact = True
+        app.draw_list()
+        bars = [y for y in range(3, 8) if scr.row(y).startswith("▌")]
+        self.assertEqual(len(bars), 5)
+        self.assertTrue(scr.has("In progress") or scr.has("Review"))  # the strip under the table names the selected status
+
+    def test_no_color_still_draws_markers(self):
+        import os
+        os.environ["NO_COLOR"] = "1"
+        try:
+            app, scr = fresh(h=28, w=100)
+            app.init_colors()
+            self.assertFalse(app.colors)
+            app.draw_list()
+            self.assertTrue(scr.has("◐"))
+        finally:
+            del os.environ["NO_COLOR"]
+
+    def test_the_bar_is_quiet_for_to_do_and_plain_for_done_and_high_priority_is_bold(self):
+        import curses
+        app, scr = fresh(h=28, w=100)
+        app.sel = 0
+        app.draw_list()
+        by_title = {}
+        for y in range(3, 8):
+            for t in ("Bravo", "Alpha"):
+                if t in scr.row(y):
+                    by_title[t] = y
+        self.assertTrue(scr.attr_at(by_title["Bravo"], 0) & curses.A_DIM)       # to do
+        self.assertFalse(scr.attr_at(by_title["Alpha"], 0) & curses.A_DIM)      # done
+        row = scr.row(by_title["Alpha"])
+        self.assertTrue(scr.attr_at(by_title["Alpha"], row.index("High")) & curses.A_BOLD)
+        row = scr.row(by_title["Bravo"])
+        self.assertFalse(scr.attr_at(by_title["Bravo"], row.index("Low")) & curses.A_BOLD)
