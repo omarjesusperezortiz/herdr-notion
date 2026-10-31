@@ -58,6 +58,9 @@ class App:
         self.pscroll = 0  # scroll offset of the preview pane
         self.mouse_on = False
         self.last_click, self.last_click_at = None, 0.0
+        self.server_status = False  # the status filter is part of the query (the tab has more pages than are loaded)
+        self.more_all = False  # with server_status: whether the unfiltered tab had more pages
+        self.chip_counts = {}  # with server_status: the counts the chips showed before the query narrowed
         self.marked = set()  # page ids chosen with x for a bulk status change
         self.advance_ok = False  # the > key asks to confirm only the first time
         self.compact = False  # z: bar only, no status column (the table shows the status word on every row)
@@ -138,8 +141,7 @@ class App:
         if action == "tab":
             self.guard(self.pick_filter, arg)
         elif action == "status":
-            self.status_filter = arg
-            self.refilter()
+            self.guard(self.set_status_filter, arg)
         elif action == "row" and arg < len(self.pages):
             again = self.last_click == (y, self.pages[arg]["id"]) and time.time() - self.last_click_at < 0.5
             self.sel, self.focus = arg, "list"
@@ -225,7 +227,12 @@ class App:
         flt = self.cfg["filters"][self.fidx]
         if flt.get("view"):  # a saved Notion view: its own filters and order, with real paging
             return {"view_url": flt["view"], "page_size": self.cfg["page_size"]}
-        return nt.build_query(flt, self.query, self.title_prop, "me", self.cfg["page_size"])
+        body = nt.build_query(flt, self.query, self.title_prop, "me", self.cfg["page_size"])
+        if self.server_status and self.status_filter:
+            prop = self.cfg["status_property"]
+            cond = {"property": prop, nt.status_options(schema, prop)[0]: {"equals": self.status_filter}}
+            body["filter"] = {"and": [body["filter"], cond]} if body.get("filter") else cond
+        return body
 
     def set_status_order(self, schema):
         """Order of the statuses for sorting and grouping: the order of the options in Notion (not started, started,
@@ -523,9 +530,7 @@ class App:
     def kind_of(self, name):
         return nt.group_kind(self.groups.get(name, "")) or nt.guess_kind(name)
 
-    def status_chips(self):
-        """[(status name, count)] for the second header row: the options in their Notion order, counted over the
-        loaded pages (narrowed by the typed text only, so a count does not change when its own chip is chosen)."""
+    def local_counts(self):
         prop = self.cfg["status_property"]
         counts = {}
         for p in self.all:
@@ -534,17 +539,40 @@ class App:
             name = nt.prop_text(p["properties"].get(prop))
             if name:
                 counts[name] = counts.get(name, 0) + 1
-        names = sorted(set(counts) | ({self.status_filter} if self.status_filter else set()),
+        return counts
+
+    def status_chips(self):
+        """[(status name, count)] for the second header row: every option of the status property in its Notion order,
+        counted over the loaded pages (narrowed by the typed text only, so a count does not change when its own chip
+        is chosen). While the query itself is narrowed to one status, the counts from before are kept."""
+        counts = self.chip_counts if self.server_status else self.local_counts()
+        names = sorted(set(self.status_order) | set(counts) | ({self.status_filter} if self.status_filter else set()),
                        key=lambda n: (self.status_order.get(n, 10 ** 6), n))
         return [(n, counts.get(n, 0)) for n in names]
+
+    def set_status_filter(self, name):
+        """Show one status ("" for all). When the tab has more pages than are loaded, ask Notion for that status
+        so nothing is missed; otherwise narrow the loaded pages at once."""
+        if name == self.status_filter:
+            return
+        self.status_filter = name
+        if self.on_view_tab():  # a saved view keeps its own filters: only the loaded pages can be narrowed
+            self.refilter()
+        elif name and not self.server_status and self.has_more:
+            self.chip_counts, self.more_all, self.server_status = self.local_counts(), True, True
+            self.refresh_async("Loading %s…" % name)
+        elif self.server_status:
+            self.server_status = bool(name)
+            self.refresh_async("Loading %s…" % name if name else "Loading…")
+        else:
+            self.refilter()
+        self.msg = ("showing %s" % name) if name else "showing every status"
 
     def cycle_status(self, step):
         """[ and ]: move along the status chips; past the last one (or before the first) the filter is cleared."""
         order = [""] + [n for n, _ in self.status_chips()]
         i = order.index(self.status_filter) if self.status_filter in order else 0
-        self.status_filter = order[(i + step) % len(order)]
-        self.refilter()
-        self.msg = ("showing %s" % self.status_filter) if self.status_filter else "showing every status"
+        self.set_status_filter(order[(i + step) % len(order)])
 
     def draw_chips(self, y, w):
         """Row of status chips with counts; the chosen one is highlighted. Falls back to a rule when it cannot fit."""
@@ -552,11 +580,22 @@ class App:
         if w < self.CHIPS_MIN_WIDTH or not chips:
             self.rule(y, w)
             return
+        more = self.more_all if self.server_status else self.has_more
         total = sum(n for _, n in chips)
-        items = [("", "All %d" % total, curses.A_BOLD)] + [
-            (n, "%s %s %d" % (self.MARK[self.kind_of(n)], n, c), self.kind_attr(self.kind_of(n))) for n, c in chips]
+
+        def items(rows):
+            return [("", "All %d%s" % (total, "+" if more else ""), curses.A_BOLD)] + [
+                (n, "%s %s %d%s" % (self.MARK[self.kind_of(n)], n, c, "+" if more else ""),
+                 self.kind_attr(self.kind_of(n)) if c or n == self.status_filter else curses.A_DIM) for n, c in rows]
+
+        def width(its):
+            return sum(len(l) + 3 for _, l, _ in its)
+
+        its = items(chips)
+        if width(its) > w - 14:  # too wide for every status: leave out the ones with nothing loaded
+            its = items([(n, c) for n, c in chips if c or n == self.status_filter])
         x = 1
-        for name, label, attr in items:
+        for name, label, attr in its:
             label = " %s " % label
             if x + len(label) > w - 3:
                 self.scr.addnstr(y, x, "›", 1, curses.A_DIM)
@@ -1575,6 +1614,7 @@ class App:
             self.fidx = idx
             self.query = ""
             self.status_filter = ""
+            self.server_status = False
             self.refresh_async("Loading %s…" % self.cfg["filters"][idx]["name"])
 
     def search(self):
@@ -1616,18 +1656,14 @@ class App:
             curses.curs_set(0)
 
     def pick_status_filter(self):
-        """Show only one status among the loaded pages."""
-        seen = []
-        for p in sorted(self.all, key=lambda p: (self.KIND_RANK[self.status_kind(p)], nt.prop_text(p["properties"].get(self.cfg["status_property"])))):
-            t = nt.prop_text(p["properties"].get(self.cfg["status_property"]))
-            if t and t not in seen:
-                seen.append(t)
-        i = self.popup("Show only", ["(any status)"] + seen, 0 if not self.status_filter else 1 + seen.index(self.status_filter) if self.status_filter in seen else 0)
+        """Show only one status: every option of the property, with the number loaded."""
+        chips = self.status_chips()
+        names = [n for n, _ in chips]
+        i = self.popup("Show only", ["(any status)"] + ["%s (%d)" % (n, c) for n, c in chips],
+                       1 + names.index(self.status_filter) if self.status_filter in names else 0)
         if i is None:
             return
-        self.status_filter = seen[i - 1] if i else ""
-        self.refilter()
-        self.msg = ("showing %s" % self.status_filter) if self.status_filter else "showing every status"
+        self.set_status_filter(names[i - 1] if i else "")
 
     def pick_view(self):
         """Open one of the database's saved views as a tab (kept until you leave)."""
@@ -1761,8 +1797,9 @@ class App:
 
     def clear_filters(self):
         """Esc: drop the status filter and the search before quitting."""
-        had_query = bool(self.query)
+        had_query = bool(self.query) or self.server_status
         self.live, self.status_filter, self.query = "", "", ""
+        self.server_status = False
         self.refilter()
         if had_query:
             self.refresh_async("Loading…")
@@ -2161,9 +2198,7 @@ class App:
         elif k in (ord("["), ord("]")):
             self.cycle_status(1 if k == ord("]") else -1)
         elif k == ord("0") and self.status_filter:
-            self.status_filter = ""
-            self.refilter()
-            self.msg = "showing every status"
+            self.set_status_filter("")
         elif k == ord("V"):
             self.guard(self.pick_view)
         elif k == ord("x"):

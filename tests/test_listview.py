@@ -104,7 +104,7 @@ class Filtering(unittest.TestCase):
 
         def popup(title, items, start=0):
             offered["items"] = items
-            return items.index("Done")
+            return items.index("Done (1)")
         app.popup = popup
         app.pick_status_filter()
         self.assertEqual(offered["items"][0], "(any status)")

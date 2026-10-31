@@ -98,7 +98,30 @@ class StatusChips(unittest.TestCase):
     def test_typed_text_narrows_the_counts(self):
         app, scr = fresh()
         app.live = "alp"
-        self.assertEqual(app.status_chips(), [("Done", 1)])
+        self.assertEqual([c for c in app.status_chips() if c[1]], [("Done", 1)])
+
+    def test_every_status_is_listed_even_with_nothing_loaded(self):
+        app, scr = fresh(h=28, w=150)
+        app.all = [p for p in app.all if nt.prop_text(p["properties"]["Status"]) != "Done"]
+        app.refilter()
+        self.assertEqual([n for n, _ in app.status_chips()], ["To do", "In progress", "Review", "Done"])
+        app.draw_list()
+        self.assertIn("Done 0", scr.row(1))
+
+    def test_zero_chips_are_left_out_only_when_the_row_would_not_fit(self):
+        app, scr = fresh(h=28, w=75)
+        app.all = [p for p in app.all if nt.prop_text(p["properties"]["Status"]) != "Done"]
+        app.refilter()
+        app.draw_list()
+        self.assertNotIn("Done 0", scr.row(1))   # 75 columns: too tight for the four chips, the empty one goes
+        self.assertIn("Review 1", scr.row(1))
+
+    def test_a_plus_means_more_pages_exist(self):
+        app, scr = fresh(h=28, w=150)
+        app.has_more = True
+        app.draw_list()
+        self.assertIn("All 5+", scr.row(1))
+        self.assertIn("To do 2+", scr.row(1))
 
     def test_narrow_pane_has_no_chip_row(self):
         app, scr = fresh(h=28, w=60)
@@ -430,3 +453,78 @@ class Mouse(unittest.TestCase):
         base = {"notion": {"data_source_id": "ds"}}
         self.assertFalse(cfgmod.normalize(base)["mouse"])
         self.assertTrue(cfgmod.normalize({"notion": {"data_source_id": "ds", "mouse": True}})["mouse"])
+
+
+class StatusFromTheServer(unittest.TestCase):
+    """With more pages on the server than loaded, a chosen status is part of the query."""
+
+    def more(self):
+        app, scr = fresh(h=28, w=150)
+        app.has_more = True
+        started = []
+        app.refresh_async = lambda label="": started.append(label)
+        return app, started
+
+    def test_choosing_a_status_asks_notion_when_there_are_more_pages(self):
+        app, started = self.more()
+        app.set_status_filter("Done")
+        self.assertTrue(app.server_status)
+        self.assertEqual(started, ["Loading Done…"])
+        body = app.build_list_query(app.client.discover())
+        self.assertEqual(body["filter"], {"property": "Status", "status": {"equals": "Done"}})
+
+    def test_the_status_is_ANDed_with_the_tab_filter_and_search(self):
+        app, started = self.more()
+        app.cfg["filters"] = [{"name": "All"}, {"name": "Mine", "filter": {"property": "Priority", "select": {"equals": "High"}}}]
+        app.fidx, app.query, app.title_prop = 1, "alp", "Name"
+        app.set_status_filter("Done")
+        flt = app.build_list_query(app.client.discover())["filter"]
+        self.assertEqual(flt["and"][0], {"and": [{"property": "Priority", "select": {"equals": "High"}},
+                                                  {"property": "Name", "title": {"contains": "alp"}}]})
+        self.assertEqual(flt["and"][1], {"property": "Status", "status": {"equals": "Done"}})
+
+    def test_counts_from_before_stay_on_the_chips_and_clearing_reloads_everything(self):
+        app, started = self.more()
+        before = app.status_chips()
+        app.set_status_filter("Done")
+        app.all = [p for p in app.all if nt.prop_text(p["properties"]["Status"]) == "Done"]  # what the server sent back
+        app.refilter()
+        self.assertEqual(app.status_chips(), before)
+        app.set_status_filter("")
+        self.assertFalse(app.server_status)
+        self.assertEqual(started[-1], "Loading…")
+        self.assertNotIn("filter", app.build_list_query(app.client.discover()))
+
+    def test_everything_loaded_means_no_request(self):
+        app, scr = fresh(h=28, w=150)
+        started = []
+        app.refresh_async = lambda label="": started.append(label)
+        app.set_status_filter("Done")
+        self.assertFalse(app.server_status)
+        self.assertEqual(started, [])
+        self.assertEqual(titles(app), ["Alpha"])
+
+    def test_a_notion_view_only_narrows_what_is_loaded(self):
+        app, started = self.more()
+        app.cfg["filters"] = [{"name": "▦ Board", "view": "view://x"}]
+        app.fidx = 0
+        app.set_status_filter("Done")
+        self.assertFalse(app.server_status)
+        self.assertEqual(started, [])
+
+    def test_switching_tab_or_pressing_esc_drops_the_server_status(self):
+        app, started = self.more()
+        app.set_status_filter("Done")
+        app.pick_filter(1)
+        self.assertFalse(app.server_status)
+        self.assertEqual(app.status_filter, "")
+        app.set_status_filter("Done")
+        app.clear_filters()
+        self.assertFalse(app.server_status)
+
+    def test_the_F_picker_offers_every_status(self):
+        app, scr = fresh(h=28, w=150)
+        offered = {}
+        app.popup = lambda title, items, start=0: offered.setdefault("items", items) and None
+        app.pick_status_filter()
+        self.assertEqual(offered["items"], ["(any status)", "To do (2)", "In progress (1)", "Review (1)", "Done (1)"])
