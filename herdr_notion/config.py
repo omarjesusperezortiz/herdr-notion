@@ -55,6 +55,7 @@ def normalize(raw):
         "group_order": list(n.get("group_order", [])),
         "title_property": n.get("title_property", ""),
         "page_size": int(n.get("page_size", 50)),
+        "mouse": bool(n.get("mouse", False)),
         "filters": raw.get("filters") or [{"name": "All"}],
         "delegate": {
             "prompt": d.get("prompt", DEFAULT_PROMPT),

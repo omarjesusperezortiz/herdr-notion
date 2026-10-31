@@ -331,3 +331,91 @@ class BulkAndAdvance(unittest.TestCase):
         app.list_key(ord(">"))
         self.assertEqual(app.client.writes, [])
         self.assertIn("last status", app.msg)
+
+
+class Mouse(unittest.TestCase):
+    """Fake mouse events only: whether herdr passes real ones to a plugin pane is not verified."""
+
+    def click(self, app, x, y, button=None):
+        import curses
+        from unittest import mock
+        b = app.WHEEL_UP if button == "up" else app.WHEEL_DOWN if button == "down" else curses.BUTTON1_PRESSED
+        with mock.patch("curses.getmouse", return_value=(0, x, y, 0, b)):
+            return app.list_key(curses.KEY_MOUSE)
+
+    def test_click_selects_a_row_and_a_second_click_opens_it(self):
+        app, scr = fresh(h=28, w=100)
+        app.draw_list()
+        opened = []
+        app.open_page = lambda p: opened.append(p["id"])
+        self.click(app, 10, 5)
+        self.assertEqual(app.sel, 2)
+        self.assertEqual(opened, [])
+        self.click(app, 10, 5)
+        self.assertEqual(opened, [app.pages[2]["id"]])
+
+    def test_clicking_two_different_rows_does_not_open(self):
+        app, scr = fresh(h=28, w=100)
+        app.draw_list()
+        opened = []
+        app.open_page = lambda p: opened.append(p)
+        self.click(app, 10, 4)
+        self.click(app, 10, 5)
+        self.assertEqual(opened, [])
+
+    def test_click_on_a_tab_switches_to_it(self):
+        app, scr = fresh(h=28, w=100)
+        app.draw_list()
+        x = scr.row(0).index("Mine")
+        picked = []
+        app.pick_filter = lambda i=None: picked.append(i)
+        self.click(app, x + 1, 0)
+        self.assertEqual(picked, [1])
+
+    def test_click_on_a_status_chip_filters_and_all_clears(self):
+        app, scr = fresh(h=28, w=100)
+        app.draw_list()
+        self.click(app, scr.row(1).index("Done") + 1, 1)
+        self.assertEqual(app.status_filter, "Done")
+        self.assertEqual(titles(app), ["Alpha"])
+        app.draw_list()
+        self.click(app, scr.row(1).index("All") + 1, 1)
+        self.assertEqual(app.status_filter, "")
+
+    def test_click_on_empty_space_does_nothing(self):
+        app, scr = fresh(h=28, w=100)
+        app.draw_list()
+        sel = app.sel
+        self.click(app, 5, 20)
+        self.assertEqual(app.sel, sel)
+
+    def test_wheel_scrolls_the_preview_over_it_and_the_list_elsewhere(self):
+        app, scr = fresh(h=14, w=150)
+        app.cache[app.pages[0]["id"]] = ["line %02d" % i for i in range(60)]
+        app.draw_list()
+        self.click(app, 140, 6, "down")
+        self.assertEqual(app.pscroll, 3)
+        self.assertEqual(app.sel, 0)
+        self.click(app, 140, 6, "up")
+        self.assertEqual(app.pscroll, 0)
+        self.click(app, 10, 6, "down")
+        self.assertEqual(app.sel, 3)
+        self.assertEqual(app.pscroll, 0)
+
+    def test_m_toggles_the_mouse_and_says_how_to_select_text(self):
+        from unittest import mock
+        app, scr = fresh()
+        with mock.patch("curses.mousemask") as mm, mock.patch("curses.mouseinterval"):
+            app.list_key(ord("M"))
+            self.assertTrue(app.mouse_on)
+            self.assertIn("Option or Shift", app.msg)
+            self.assertNotEqual(mm.call_args[0][0], 0)
+            app.list_key(ord("M"))
+            self.assertFalse(app.mouse_on)
+            self.assertEqual(mm.call_args[0][0], 0)
+
+    def test_mouse_is_off_unless_the_config_says_so(self):
+        from herdr_notion import config as cfgmod
+        base = {"notion": {"data_source_id": "ds"}}
+        self.assertFalse(cfgmod.normalize(base)["mouse"])
+        self.assertTrue(cfgmod.normalize({"notion": {"data_source_id": "ds", "mouse": True}})["mouse"])

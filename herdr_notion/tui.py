@@ -24,7 +24,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab", "give the arrows to the preview (optional: Space/b already scroll it)"), ("← →, h l", "previous / next tab"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab", "give the arrows to the preview (optional: Space/b already scroll it)"), ("← →, h l", "previous / next tab"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -56,6 +56,8 @@ class App:
         self.live = ""  # type-ahead text (filters the loaded pages as you type)
         self.status_filter = ""  # show only this status
         self.pscroll = 0  # scroll offset of the preview pane
+        self.mouse_on = False
+        self.last_click, self.last_click_at = None, 0.0
         self.marked = set()  # page ids chosen with x for a bulk status change
         self.advance_ok = False  # the > key asks to confirm only the first time
         self.compact = False  # z: bar only, no status column (the table shows the status word on every row)
@@ -85,6 +87,66 @@ class App:
         self.groups = {}
         self.fidx = 0
         self.cfg = cfg
+        self.set_mouse(cfg["mouse"])
+
+    # ------------------------------------------------------------ mouse (opt-in)
+    WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0x80000)
+    WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0x200000)  # ncurses 6 reports the wheel down as button 5
+
+    def set_mouse(self, on):
+        """Ask the terminal for clicks and the wheel (or stop asking). While on, dragging selects nothing and
+        Cmd-click opens no links; Option (macOS Terminal, iTerm) or Shift (most others) gives that back."""
+        self.mouse_on = bool(on)
+        try:
+            curses.mousemask(curses.BUTTON1_PRESSED | self.WHEEL_UP | self.WHEEL_DOWN if on else 0)
+            curses.mouseinterval(0)
+        except curses.error:
+            self.mouse_on = False
+
+    def toggle_mouse(self):
+        self.set_mouse(not self.mouse_on)
+        self.msg = ("mouse on: click a row, tab or status, wheel scrolls · hold Option or Shift to select text"
+                    if self.mouse_on else "mouse off")
+
+    def on_mouse(self):
+        """A mouse event arrived: the wheel scrolls the pane under the pointer, a click selects, a second click opens."""
+        try:
+            _, x, y, _, bstate = curses.getmouse()
+        except curses.error:
+            return True
+        w = self.scr.getmaxyx()[1]
+        if self.detail:
+            if bstate & self.WHEEL_UP:
+                self.dscroll = max(0, self.dscroll - 3)
+            elif bstate & self.WHEEL_DOWN:
+                self.dscroll += 3
+            return True
+        wheel = -3 if bstate & self.WHEEL_UP else 3 if bstate & self.WHEEL_DOWN else 0
+        if wheel:
+            tw = max(70, int(w * 0.56))
+            if self.wide() and x > tw:
+                self.pscroll = max(0, self.pscroll + wheel)
+            elif self.pages:
+                self.sel = max(0, min(len(self.pages) - 1, self.sel + wheel))
+            return True
+        if not bstate & curses.BUTTON1_PRESSED:
+            return True
+        hit = next((h for h in self.hits if h[0] == y and h[1] <= x < h[2]), None)
+        if not hit:
+            return True
+        action, arg = hit[3], hit[4]
+        if action == "tab":
+            self.guard(self.pick_filter, arg)
+        elif action == "status":
+            self.status_filter = arg
+            self.refilter()
+        elif action == "row" and arg < len(self.pages):
+            again = self.last_click == (y, self.pages[arg]["id"]) and time.time() - self.last_click_at < 0.5
+            self.sel, self.focus = arg, "list"
+            self.last_click, self.last_click_at = (y, self.pages[arg]["id"]), time.time()
+            if again:
+                self.guard(self.open_page, self.pages[arg])
+        return True
 
     def busy(self, text):
         self.scr.erase()
@@ -534,6 +596,7 @@ class App:
             if x + len(labels[i]) + 2 > 9 + avail and i != self.fidx:
                 self.scr.addnstr(0, x, "›", 1, curses.A_DIM)
                 break
+            self.hits.append((0, x, x + len(labels[i]), "tab", i))
             self.scr.addnstr(0, x, labels[i], max(1, w - 1 - x),
                              self.cp(4) | curses.A_BOLD if i == self.fidx and self.colors
                              else curses.A_REVERSE if i == self.fidx else curses.A_DIM)
@@ -1686,7 +1749,7 @@ class App:
                ("Show one status ([ ] moves along them)", "F"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
                ("Notion views", "V"), ("Sort", "O"), ("Group by status", "g"), ("Compact rows", "z"),
                ("Switch database", "D"), ("Refresh", "r"), ("Open in browser", "o"), ("Copy the link", "y"),
-               ("Connection and sign-in", "S"), ("Help: every key", "?")]
+               ("Mouse on or off", "M"), ("Connection and sign-in", "S"), ("Help: every key", "?")]
 
     def palette(self):
         """:  every command by name, for the ones whose key you do not remember."""
@@ -2048,6 +2111,8 @@ class App:
     def list_key(self, k):
         self.msg = "" if k != -1 else self.msg
         n = len(self.pages)
+        if k == curses.KEY_MOUSE:
+            return self.on_mouse()
         if self.focus == "preview":
             return self.preview_key(k)
         if k == 9 and self.wide() and self.pages:  # Tab: the arrow keys now scroll the preview
@@ -2101,6 +2166,8 @@ class App:
             self.guard(self.pick_view)
         elif k == ord("x"):
             self.toggle_mark()
+        elif k == ord("M"):
+            self.toggle_mouse()
         elif k == ord("+"):
             self.guard(self.save_view_as_tab)
         elif k == ord("T"):
@@ -2155,6 +2222,8 @@ class App:
 
     def detail_key(self, k):
         h = self.scr.getmaxyx()[0]
+        if k == curses.KEY_MOUSE:
+            return self.on_mouse()
         if k in (ord("q"), 27, curses.KEY_LEFT, ord("h")):
             self.detail = None
         elif k in (curses.KEY_DOWN, ord("j")):
