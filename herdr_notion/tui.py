@@ -18,12 +18,13 @@ from . import mcpbackend as mb
 from . import oauth
 from . import notion as nt
 from . import setup as st
+from . import tomlcompat
 
 HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm)"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab", "give the arrows to the preview (optional: Space/b already scroll it)"), ("← →, h l", "previous / next tab"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm)"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab", "give the arrows to the preview (optional: Space/b already scroll it)"), ("← →, h l", "previous / next tab"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -1533,6 +1534,118 @@ class App:
         self.cfg["filters"].append({"name": name, "view": views[i]["url"]})
         self.pick_filter(len(self.cfg["filters"]) - 1)
 
+    # ------------------------------------------------------------ custom tabs and the command palette
+    def save_filters(self, filters):
+        """Write `filters` as the [[filters]] tables of config.toml. The new text is checked before it replaces the file."""
+        path = cfgmod.config_path()
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        new = st.replace_filters(text, filters)
+        try:
+            cfgmod.normalize(tomlcompat.loads(new))
+        except ValueError as e:
+            raise cfgmod.ConfigError("could not write the tabs: %s" % e)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new)
+        self.cfg["filters"] = filters
+
+    def current_view_filter(self):
+        """The filter of what is on screen: the tab's own filter, the chosen status and the searched text, ANDed."""
+        flt = self.cfg["filters"][self.fidx]
+        conds = [flt["filter"]] if flt.get("filter") else []
+        if self.status_filter:
+            kind = nt.status_options(self.client.discover(), self.cfg["status_property"])[0]
+            conds.append({"property": self.cfg["status_property"], kind: {"equals": self.status_filter}})
+        text = self.query or self.live
+        if text:
+            conds.append({"property": self.title_prop or "Name", "title": {"contains": text}})
+        return conds[0] if len(conds) == 1 else {"and": conds} if conds else None
+
+    def save_view_as_tab(self):
+        """+: keep the current tab, status and search as a new tab."""
+        flt = self.cfg["filters"][self.fidx]
+        if flt.get("view"):
+            self.msg = "this tab is a Notion view: save a normal tab with a status or a search"
+            return
+        if not (self.status_filter or self.query or self.live):
+            self.msg = "choose a status ([ ]) or search (/) first, then press + to keep it"
+            return
+        suggestion = " · ".join(x for x in (flt["name"], self.status_filter, self.query or self.live) if x)
+        name = self.ask("Tab name: ", suggestion)
+        if not name or not name.strip():
+            return
+        new = {"name": name.strip()}
+        merged = self.current_view_filter()
+        if merged:
+            new["filter"] = merged
+        if flt.get("sort"):
+            new["sort"] = flt["sort"]
+        self.save_filters(list(self.cfg["filters"]) + [new])
+        self.pick_filter(len(self.cfg["filters"]) - 1)
+        self.msg = "saved the tab %s" % new["name"]
+
+    @staticmethod
+    def tab_summary(flt):
+        if flt.get("view"):
+            return "Notion view"
+        return nt.clip(json.dumps(flt["filter"], ensure_ascii=False, separators=(",", ":")), 40) if flt.get("filter") else "no filter"
+
+    def manage_tabs(self):
+        """T: rename, reorder, delete or add tabs. Every change is written to config.toml."""
+        sel = self.fidx
+        while True:
+            filters = self.cfg["filters"]
+            items = ["%s   %s" % (f["name"], self.tab_summary(f)) for f in filters] + ["+ save the current view as a tab"]
+            i = self.popup("Tabs", items, min(sel, len(items) - 1))
+            if i is None:
+                return
+            if i == len(filters):
+                self.save_view_as_tab()
+                return
+            sel = i
+            act = self.popup(filters[i]["name"], ["Rename", "Move left", "Move right", "Delete"])
+            if act is None:
+                continue
+            current = filters[self.fidx]
+            new = list(filters)
+            if act == 0:
+                name = self.ask("Tab name: ", filters[i]["name"])
+                if not name or not name.strip():
+                    continue
+                new[i] = dict(filters[i], name=name.strip())
+                current = new[self.fidx]
+            elif act in (1, 2):
+                j = i + (-1 if act == 1 else 1)
+                if not 0 <= j < len(new):
+                    continue
+                new[i], new[j] = new[j], new[i]
+                sel = j
+            else:
+                if len(new) == 1:
+                    self.msg = "keep at least one tab"
+                    continue
+                if not self.confirm("Delete the tab %s?" % filters[i]["name"]):
+                    continue
+                gone = new.pop(i)
+                sel = min(i, len(new) - 1)
+                if current is gone:
+                    current = new[0]
+            self.save_filters(new)
+            self.fidx = next((n for n, f in enumerate(new) if f is current), 0)
+            self.msg = "tabs saved"
+
+    PALETTE = [("Change status", "s"), ("Delegate to an agent", "d"), ("Edit a property", "e"), ("New page", "n"),
+               ("Show one status ([ ] moves along them)", "F"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
+               ("Notion views", "V"), ("Sort", "O"), ("Group by status", "g"), ("Compact rows", "z"),
+               ("Switch database", "D"), ("Refresh", "r"), ("Open in browser", "o"), ("Copy the link", "y"),
+               ("Connection and sign-in", "S"), ("Help: every key", "?")]
+
+    def palette(self):
+        """:  every command by name, for the ones whose key you do not remember."""
+        i = self.popup("Commands", ["%s   %s" % (n, k) for n, k in self.PALETTE])
+        if i is not None:
+            self.list_key(ord(self.PALETTE[i][1]))
+
     def clear_filters(self):
         """Esc: drop the status filter and the search before quitting."""
         had_query = bool(self.query)
@@ -1932,6 +2045,12 @@ class App:
             self.msg = "showing every status"
         elif k == ord("V"):
             self.guard(self.pick_view)
+        elif k == ord("+"):
+            self.guard(self.save_view_as_tab)
+        elif k == ord("T"):
+            self.guard(self.manage_tabs)
+        elif k == ord(":"):
+            self.guard(self.palette)
         elif k == ord("z"):
             self.compact = not self.compact
             self.msg = "compact: the colored bar shows the status" if self.compact else "table: status word on every row"

@@ -148,6 +148,8 @@ def render_filters(filters):
             lines.append("view = %s" % toml_value(f["view"]))
         if f.get("filter"):
             lines.append("filter = %s" % toml_value(f["filter"]))
+        if f.get("sort"):
+            lines.append("sort = %s" % toml_value(f["sort"]))
         lines.append("")
     return "\n".join(lines)
 

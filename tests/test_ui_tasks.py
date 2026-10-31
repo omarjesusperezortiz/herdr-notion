@@ -165,3 +165,98 @@ class Density(unittest.TestCase):
         self.assertTrue(scr.attr_at(by_title["Alpha"], row.index("High")) & curses.A_BOLD)
         row = scr.row(by_title["Bravo"])
         self.assertFalse(scr.attr_at(by_title["Bravo"], row.index("Low")) & curses.A_BOLD)
+
+
+class CustomTabs(unittest.TestCase):
+    def setUp(self):
+        import os
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        os.environ["HERDR_PLUGIN_CONFIG_DIR"] = self.dir
+        with open(os.path.join(self.dir, "config.toml"), "w") as f:
+            f.write('[notion]\ndata_source_id = "ds"\nstatus_property = "Status"\n\n'
+                    '[[filters]]\nname = "All"\n\n[[filters]]\nname = "Mine"\nfilter = { "property" = "Priority", "select" = { "equals" = "High" } }\n'
+                    'sort = { "property" = "Name", "direction" = "ascending" }\n')
+        self.app, self.scr = fresh(h=28, w=100)
+        from herdr_notion import config as cfgmod
+        self.app.cfg = dict(cfgmod.load(), filters=cfgmod.load()["filters"], columns=["Status", "Priority"])
+        self.app.cfg["delegate"] = cfgmod.load()["delegate"]
+        self.app.refresh_async = lambda label="": None
+
+    def tearDown(self):
+        import os
+        del os.environ["HERDR_PLUGIN_CONFIG_DIR"]
+
+    def written(self):
+        import os
+        from herdr_notion import config as cfgmod
+        return cfgmod.load(os.path.join(self.dir, "config.toml"))["filters"]
+
+    def test_saving_the_view_combines_tab_status_and_text_and_survives_a_reload(self):
+        app = self.app
+        app.fidx = 1
+        app.status_filter, app.query = "Done", "alp"
+        app.ask = lambda label, initial="": "My done alphas"
+        app.save_view_as_tab()
+        saved = self.written()
+        self.assertEqual([f["name"] for f in saved], ["All", "Mine", "My done alphas"])
+        flt = saved[2]["filter"]
+        self.assertEqual(flt, {"and": [{"property": "Priority", "select": {"equals": "High"}},
+                                        {"property": "Status", "status": {"equals": "Done"}},
+                                        {"property": "Name", "title": {"contains": "alp"}}]})
+        self.assertEqual(saved[2]["sort"], {"property": "Name", "direction": "ascending"})
+        self.assertEqual(app.fidx, 2)  # the new tab is selected
+        self.assertEqual(saved[1]["sort"], {"property": "Name", "direction": "ascending"})  # hand-written sort kept
+
+    def test_nothing_to_save_without_a_status_or_search(self):
+        self.app.save_view_as_tab()
+        self.assertIn("choose a status", self.app.msg)
+        self.assertEqual([f["name"] for f in self.written()], ["All", "Mine"])
+
+    def test_a_notion_view_tab_cannot_be_saved_again(self):
+        self.app.cfg["filters"][0]["view"] = "view://x"
+        self.app.status_filter = "Done"
+        self.app.save_view_as_tab()
+        self.assertIn("Notion view", self.app.msg)
+
+    def test_rename_move_and_delete(self):
+        app = self.app
+        app.confirm = lambda text: True
+        app.ask = lambda label, initial="": "Everything"
+        script = iter([0, 0,      # tab All -> Rename
+                       0, 2,      # tab Everything -> Move right
+                       None])     # close
+        app.popup = lambda title, items, start=0: next(script)
+        app.manage_tabs()
+        self.assertEqual([f["name"] for f in self.written()], ["Mine", "Everything"])
+        self.assertEqual(app.cfg["filters"][app.fidx]["name"], "Everything")  # the open tab followed its move
+        script = iter([0, 3, None])  # delete Mine
+        app.popup = lambda title, items, start=0: next(script)
+        app.manage_tabs()
+        self.assertEqual([f["name"] for f in self.written()], ["Everything"])
+        script = iter([0, 3, None])  # the last tab is kept
+        app.popup = lambda title, items, start=0: next(script)
+        app.manage_tabs()
+        self.assertEqual([f["name"] for f in self.written()], ["Everything"])
+
+    def test_declining_a_delete_changes_nothing(self):
+        app = self.app
+        app.confirm = lambda text: False
+        script = iter([1, 3, None])
+        app.popup = lambda title, items, start=0: next(script)
+        app.manage_tabs()
+        self.assertEqual([f["name"] for f in self.written()], ["All", "Mine"])
+
+    def test_palette_runs_the_chosen_command(self):
+        app = self.app
+        names = [n for n, _ in app.PALETTE]
+        app.popup = lambda title, items, start=0: names.index("Compact rows")
+        app.palette()
+        self.assertTrue(app.compact)
+
+    def test_colon_opens_the_palette_from_the_list(self):
+        app = self.app
+        seen = {}
+        app.popup = lambda title, items, start=0: seen.setdefault("title", title) and None
+        app.list_key(ord(":"))
+        self.assertEqual(seen["title"], "Commands")
