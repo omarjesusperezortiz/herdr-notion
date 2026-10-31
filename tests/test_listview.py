@@ -255,11 +255,11 @@ class Focus(unittest.TestCase):
         app.cache[app.pages[0]["id"]] = ["line %02d" % i for i in range(60)]
         return app, scr
 
-    def test_tab_gives_the_arrow_keys_to_the_preview(self):
+    def test_right_arrow_gives_the_arrow_keys_to_the_preview(self):
         app, scr = self.wide_app()
         app.draw_list()
         self.assertTrue(scr.has("Space ▾ more"))
-        app.list_key(9)
+        app.list_key(curses_key("RIGHT"))
         self.assertEqual(app.focus, "preview")
         sel = app.sel
         for _ in range(5):
@@ -268,29 +268,39 @@ class Focus(unittest.TestCase):
         self.assertEqual(app.pscroll, 5)        # the preview did
         app.draw_list()
         self.assertFalse(scr.has("line 00"))
-        self.assertTrue(scr.has("Tab back"))
+        self.assertTrue(scr.has("← back"))
         app.list_key(curses_key("NPAGE"))
         self.assertGreater(app.pscroll, 5)
-        app.list_key(9)
+        app.list_key(curses_key("LEFT"))
         self.assertEqual(app.focus, "list")
 
     def test_esc_returns_to_the_list_not_out_of_the_app(self):
         app, _ = self.wide_app()
-        app.list_key(9)
+        app.list_key(curses_key("RIGHT"))
         self.assertTrue(app.list_key(27))
         self.assertEqual(app.focus, "list")
 
-    def test_tab_does_nothing_without_a_preview(self):
+    def test_right_arrow_opens_the_page_when_there_is_no_preview(self):
         app, _ = make_app([dict(p) for p in PAGES], h=20, w=90)
-        app.list_key(9)
+        opened = []
+        app.open_page = lambda p: opened.append(p["id"])
+        app.list_key(curses_key("RIGHT"))
         self.assertEqual(app.focus, "list")
+        self.assertEqual(opened, [app.pages[0]["id"]])
+
+    def test_left_arrow_on_the_list_does_nothing(self):
+        app, _ = self.wide_app()
+        sel, fidx = app.sel, app.fidx
+        self.assertTrue(app.list_key(curses_key("LEFT")))
+        self.assertEqual((app.sel, app.fidx, app.focus), (sel, fidx, "list"))
 
 
 class Tabs(unittest.TestCase):
-    def test_left_and_right_cycle_the_tabs(self):
+    def test_tab_and_shift_tab_cycle_the_tabs(self):
         app, _ = make_app([dict(p) for p in PAGES])
+        app.cfg["filters"] = [{"name": n} for n in ("A", "B", "C")]
         seen = []
         app.pick_filter = lambda idx=None: seen.append(idx)
-        app.list_key(curses_key("RIGHT"))
-        app.list_key(curses_key("LEFT"))
-        self.assertEqual(seen, [1, 1])  # two tabs: next and previous both land on the other one
+        app.list_key(9)
+        app.list_key(curses_key("BTAB"))
+        self.assertEqual(seen, [1, 2])  # next from 0 is 1; previous from 0 wraps to 2

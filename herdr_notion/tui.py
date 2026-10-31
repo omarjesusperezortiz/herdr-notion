@@ -24,7 +24,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab", "give the arrows to the preview (optional: Space/b already scroll it)"), ("← →, h l", "previous / next tab"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -684,7 +684,7 @@ class App:
         if len(wrapped) > room:  # where we are in the page, and how to scroll it
             mark = "%d%%" % min(100, 100 * (self.pscroll + room) // len(wrapped))
             more = self.pscroll + room < len(wrapped)
-            hint = ("↑↓ scroll · Tab back · " if self.focus == "preview"
+            hint = ("↑↓ scroll · ← back · " if self.focus == "preview"
                     else ("Space ▾ more · " if more else "b ▴ back · ")) + mark
             self.scr.addnstr(bottom - 1, max(x0, x0 + width - len(hint)), hint, min(len(hint), width), curses.A_DIM | curses.A_BOLD)
 
@@ -775,9 +775,9 @@ class App:
                 facts.append("agent " + cell[0])
             self.scr.addnstr(h - 4, 2, "  ·  ".join(facts), w - 3, curses.A_DIM)
         self.rule(h - 3, w)
-        self.footer([("↑↓/PgUp PgDn", "scroll"), ("Tab", "back to the list"), ("⏎", "open")] if self.focus == "preview" else
-                    [("⏎", "open"), ("s", "status"), ("d", "delegate"), ("←→", "tabs"), ("/", "search")]
-                    + ([("Space/b", "scroll preview")] if wide else []) + [("e", "edit"), ("z", "compact"), ("n", "new"), ("?", "more")])
+        self.footer([("↑↓/PgUp PgDn", "scroll"), ("←", "back to the list"), ("⏎", "open")] if self.focus == "preview" else
+                    [("⏎", "open"), ("s", "status"), ("d", "delegate"), ("Tab", "next tab"), ("/", "search")]
+                    + ([("→", "preview")] if wide else []) + [("e", "edit"), ("z", "compact"), ("n", "new"), ("?", "more")])
 
     def draw_detail(self):
         h, w = self.scr.getmaxyx()
@@ -2154,11 +2154,14 @@ class App:
             return self.on_mouse()
         if self.focus == "preview":
             return self.preview_key(k)
-        if k == 9 and self.wide() and self.pages:  # Tab: the arrow keys now scroll the preview
-            self.focus = "preview"
+        if k in (curses.KEY_RIGHT, ord("l")) and self.pages:  # → goes in: into the preview, or into the page when there is none
+            if self.wide():
+                self.focus = "preview"
+            else:
+                self.guard(self.open_page, self.pages[self.sel])
             return True
-        if k in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("h"), ord("l")) and len(self.cfg["filters"]) > 1:
-            step = 1 if k in (curses.KEY_RIGHT, ord("l")) else -1
+        if k in (9, curses.KEY_BTAB) and len(self.cfg["filters"]) > 1:  # Tab / Shift-Tab: next / previous tab
+            step = -1 if k == curses.KEY_BTAB else 1
             self.pick_filter((self.fidx + step) % len(self.cfg["filters"]))
             return True
         if k == 27 and self.marked:
@@ -2236,7 +2239,7 @@ class App:
         return True
 
     def preview_key(self, k):
-        """Keys while the preview pane has the focus: scroll it; Tab, Esc or the left arrow hand the focus back."""
+        """Keys while the preview pane has the focus: scroll it; ←, Esc or Tab hand the focus back."""
         page = max(3, self.scr.getmaxyx()[0] - 8)
         if k in (9, 27, curses.KEY_LEFT, ord("h"), ord("q")):
             self.focus = "list"
