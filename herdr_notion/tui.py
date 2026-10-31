@@ -636,6 +636,8 @@ class App:
             for piece in (textwrap.wrap(nt.display_line(l, kind), width) or [""]):
                 wrapped.append((piece, attr))
         room = bottom - y
+        if len(wrapped) > room:
+            room -= 1  # the last line is kept for the scroll cue
         self.pscroll = max(0, min(self.pscroll, max(0, len(wrapped) - room)))
         for piece, attr in wrapped[self.pscroll:self.pscroll + room]:
             self.scr.addnstr(y, x0, piece, width, attr)

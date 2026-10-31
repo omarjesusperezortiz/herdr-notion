@@ -47,6 +47,17 @@ class PreviewCue(unittest.TestCase):
         app.draw_list()
         self.assertTrue(scr.has("line 00"))
 
+    def test_cue_has_its_own_line_and_never_covers_text(self):
+        app, scr = self.long_page()
+        app.draw_list()
+        y, _ = scr.find("Space ▾")
+        self.assertNotIn("line", scr.row(y)[scr.row(y).index("│"):])
+        for n in (0, 7, 100, 10 ** 6):
+            app.pscroll = n
+            app.draw_list()
+            y, _ = scr.find("▾") or scr.find("▴")
+            self.assertNotIn("of the body", scr.row(y)[scr.row(y).index("│"):])
+
     def test_cue_changes_at_the_end_of_the_text(self):
         app, scr = self.long_page()
         app.pscroll = 10 ** 6

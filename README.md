@@ -89,6 +89,7 @@ cp config.example.toml "$(herdr plugin config-dir herdr-notion)/config.toml"
 | `columns` | Property names shown next to the title in the list. |
 | `title_property` | Property searched by `/`. Auto-detected if empty. |
 | `page_size` | Pages per query, default 50. |
+| `mouse` | `true` turns on clicks and the wheel (default `false`; `M` toggles it while running). With the mouse on, hold Option or Shift to select text. |
 
 `[[filters]]`: `name`, optional `filter` (a raw
 [Notion filter object](https://developers.notion.com/reference/filter-data-source-entries)
@@ -113,9 +114,16 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `f`, `1`-`9` | switch filter |
 | `/` | type to narrow the loaded pages at once; Enter also searches the whole database (a view only narrows) |
 | Esc | clears the search and the status filter; quits when nothing is left to clear |
-| `F` | show one status only (among the loaded pages) |
+| `[` / `]`, `0` | move along the status chips under the tabs (each shows its count), `0` shows every status |
+| `F` | pick one status to show (among the loaded pages) |
+| `+` / `T` | save the current tab + status + search as a new tab / manage tabs (rename, move, delete), written to `config.toml` |
+| `:` | command palette: every command by name |
+| `z` | compact rows: a colored bar replaces the status word (`NO_COLOR=1` turns colors off) |
+| `x` | mark a page (and move down); `s` then sets one status on every marked page, `Esc` clears the marks |
+| `>` | move the page to the next status (asks to confirm the first time only) |
+| `M` | mouse on/off: click a row (twice opens it), a tab or a status chip; the wheel scrolls the pane under the pointer |
 | `V` | open one of the database's Notion views as a tab: its filters, its order, real paging |
-| Tab | in a wide pane, hand the arrow keys to the preview: ↑↓, PgUp/PgDn, `g`/`G` scroll it; Tab, Esc or ← give them back |
+| Tab | optional: in a wide pane, hand the arrow keys to the preview (↑↓, PgUp/PgDn, `g`/`G`); Tab, Esc or ← give them back. Space and `b` scroll the preview without it |
 | ← → (or `h` `l`) | previous / next tab |
 | `J` / `K`, Space, `b` | scroll the preview a few lines / page through the list |
 | `O` / `g` | sort (newest edit, title, status) / group the rows by status, in the order the status options have in Notion (to do, in progress, done). Set `group_order = ["In progress", "To do"]` under `[notion]` to put some first |
