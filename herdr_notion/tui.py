@@ -87,6 +87,12 @@ class App:
         self.scr.addnstr(h // 2, 2, text, w - 4)
         self.scr.refresh()
 
+    def note(self, text):
+        """Show `text` in the footer over the screen as it is, without blanking it, then keep working."""
+        self.msg = text
+        (self.draw_detail if self.detail else self.draw_list)()
+        self.scr.refresh()
+
     def guard(self, fn, *a):
         """Run fn, turning expected errors into a status message."""
         try:
@@ -787,9 +793,9 @@ class App:
         if self.detail:
             body = self.detail["body"]
         else:
-            self.busy("Loading page…")
-            page = self.client.get_page(page["id"])
-            if page["id"] not in self.cache:
+            if page["id"] not in self.cache:  # the preview usually has it already; otherwise say so in the footer
+                self.note("Reading the page…")
+                page = self.client.get_page(page["id"])
                 self.cache[page["id"]] = self.client.body_lines(page["id"])
             body = "\n".join(self.cache[page["id"]])
         dcfg = self.cfg["delegate"]
@@ -1026,7 +1032,7 @@ class App:
         if i is None:
             return
         if i < len(agents):
-            self.busy("Sending prompt…")
+            self.note("Sending prompt…")
             dg.send_prompt(agents[i]["pane_id"], prompt)
             self.track(page, agents[i]["pane_id"], agents[i]["name"] or agents[i]["agent"])
             self.msg = "sent to %s" % agents[i]["name"]
@@ -1043,7 +1049,7 @@ class App:
         if not cwd:
             return
         cwd = os.path.expanduser(os.path.expandvars(cwd))
-        self.busy("Starting %s…" % kinds[j]["name"])
+        self.note("Starting %s…" % kinds[j]["name"])
         pane = dg.start_agent(kinds[j]["command"], cwd, nt.page_title(page)[:30], dcfg,
                               os.environ.get("HERDR_WORKSPACE_ID"))
         dg.send_prompt(pane, prompt)
