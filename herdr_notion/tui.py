@@ -23,7 +23,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm)"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("F", "show one status only"), ("Tab", "scroll the preview (arrows, PgUp/PgDn, Tab to leave)"), ("← →, h l", "previous / next tab"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm)"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab", "give the arrows to the preview (optional: Space/b already scroll it)"), ("← →, h l", "previous / next tab"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -55,6 +55,7 @@ class App:
         self.live = ""  # type-ahead text (filters the loaded pages as you type)
         self.status_filter = ""  # show only this status
         self.pscroll = 0  # scroll offset of the preview pane
+        self.hits = []  # clickable regions of the last drawing: (y, x0, x1, action, argument)
         self.focus = "list"  # "preview" while the arrow keys scroll the preview pane
         self.status_order = {}  # status name -> position (the order of the options in Notion, or group_order)
         self.has_more = False
@@ -429,6 +430,10 @@ class App:
         except curses.error:
             pass
 
+    def kind_attr(self, kind):
+        """Display attribute for a status kind: to do is quiet, in progress yellow, done green."""
+        return {"todo": curses.A_DIM, "progress": self.cp(1), "done": self.cp(3)}.get(kind, 0)
+
     def cp(self, n):
         return curses.color_pair(n) if self.colors else 0
 
@@ -437,10 +442,59 @@ class App:
         prop = self.cfg["status_property"]
         text = nt.prop_text(page["properties"].get(prop))
         kind = self.status_kind(page)
-        return self.MARK[kind], text, self.cp(self.PAIR[kind])
+        return self.MARK[kind], text, self.kind_attr(kind)
 
     def rule(self, y, w):
         self.scr.addnstr(y, 0, "─" * (w - 1), w - 1, curses.A_DIM)
+
+    CHIPS_MIN_WIDTH = 70
+
+    def kind_of(self, name):
+        return nt.group_kind(self.groups.get(name, "")) or nt.guess_kind(name)
+
+    def status_chips(self):
+        """[(status name, count)] for the second header row: the options in their Notion order, counted over the
+        loaded pages (narrowed by the typed text only, so a count does not change when its own chip is chosen)."""
+        prop = self.cfg["status_property"]
+        counts = {}
+        for p in self.all:
+            if self.live and self.fold(self.live) not in self.fold(nt.page_title(p)):
+                continue
+            name = nt.prop_text(p["properties"].get(prop))
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+        names = sorted(set(counts) | ({self.status_filter} if self.status_filter else set()),
+                       key=lambda n: (self.status_order.get(n, 10 ** 6), n))
+        return [(n, counts.get(n, 0)) for n in names]
+
+    def cycle_status(self, step):
+        """[ and ]: move along the status chips; past the last one (or before the first) the filter is cleared."""
+        order = [""] + [n for n, _ in self.status_chips()]
+        i = order.index(self.status_filter) if self.status_filter in order else 0
+        self.status_filter = order[(i + step) % len(order)]
+        self.refilter()
+        self.msg = ("showing %s" % self.status_filter) if self.status_filter else "showing every status"
+
+    def draw_chips(self, y, w):
+        """Row of status chips with counts; the chosen one is highlighted. Falls back to a rule when it cannot fit."""
+        chips = self.status_chips()
+        if w < self.CHIPS_MIN_WIDTH or not chips:
+            self.rule(y, w)
+            return
+        total = sum(n for _, n in chips)
+        items = [("", "All %d" % total, curses.A_BOLD)] + [
+            (n, "%s %s %d" % (self.MARK[self.kind_of(n)], n, c), self.kind_attr(self.kind_of(n))) for n, c in chips]
+        x = 1
+        for name, label, attr in items:
+            label = " %s " % label
+            if x + len(label) > w - 3:
+                self.scr.addnstr(y, x, "›", 1, curses.A_DIM)
+                break
+            on = name == self.status_filter
+            self.scr.addnstr(y, x, label, len(label), curses.A_REVERSE | curses.A_BOLD if on else attr)
+            self.hits.append((y, x, x + len(label), "status", name))
+            x += len(label) + 1
+        self.scr.addnstr(y, max(x + 1, w - 12), "[ ] status", 10, curses.A_DIM) if x + 12 < w else None
 
     def draw_tabs(self, w):
         self.scr.addnstr(0, 0, " Notion ", w - 1, curses.A_BOLD)
@@ -516,14 +570,17 @@ class App:
             y += 1
         if len(wrapped) > room:  # where we are in the page, and how to scroll it
             mark = "%d%%" % min(100, 100 * (self.pscroll + room) // len(wrapped))
-            hint = ("↑↓ scroll · Tab back · " if self.focus == "preview" else "Tab: scroll this page · ") + mark
+            more = self.pscroll + room < len(wrapped)
+            hint = ("↑↓ scroll · Tab back · " if self.focus == "preview"
+                    else ("Space ▾ more · " if more else "b ▴ back · ")) + mark
             self.scr.addnstr(bottom - 1, max(x0, x0 + width - len(hint)), hint, min(len(hint), width), curses.A_DIM | curses.A_BOLD)
 
     def draw_list(self):
         h, w = self.scr.getmaxyx()
         self.scr.erase()
+        self.hits = []
         self.draw_tabs(w)
-        self.rule(1, w)
+        self.draw_chips(1, w)
         wide = w >= self.PREVIEW_MIN_WIDTH
         tw_total = max(70, int(w * 0.56)) if wide else w  # width of the table; the rest is the preview pane
         # Columns right of the title, in priority order: status, other columns, edited.
@@ -600,7 +657,7 @@ class App:
         self.rule(h - 3, w)
         self.footer([("↑↓/PgUp PgDn", "scroll"), ("Tab", "back to the list"), ("⏎", "open")] if self.focus == "preview" else
                     [("⏎", "open"), ("s", "status"), ("d", "delegate"), ("←→", "tabs"), ("/", "search")]
-                    + ([("Tab", "scroll preview")] if wide else []) + [("e", "edit"), ("n", "new"), ("?", "more")])
+                    + ([("Space/b", "scroll preview")] if wide else []) + [("e", "edit"), ("n", "new"), ("?", "more")])
 
     def draw_detail(self):
         h, w = self.scr.getmaxyx()
@@ -1856,6 +1913,12 @@ class App:
             self.guard(self.search)
         elif k == ord("F"):
             self.guard(self.pick_status_filter)
+        elif k in (ord("["), ord("]")):
+            self.cycle_status(1 if k == ord("]") else -1)
+        elif k == ord("0") and self.status_filter:
+            self.status_filter = ""
+            self.refilter()
+            self.msg = "showing every status"
         elif k == ord("V"):
             self.guard(self.pick_view)
         elif k == ord("n"):

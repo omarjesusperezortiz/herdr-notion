@@ -258,7 +258,7 @@ class Focus(unittest.TestCase):
     def test_tab_gives_the_arrow_keys_to_the_preview(self):
         app, scr = self.wide_app()
         app.draw_list()
-        self.assertTrue(scr.has("Tab: scroll this page"))
+        self.assertTrue(scr.has("Space ▾ more"))
         app.list_key(9)
         self.assertEqual(app.focus, "preview")
         sel = app.sel
