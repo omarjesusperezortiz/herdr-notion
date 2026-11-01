@@ -528,3 +528,62 @@ class StatusFromTheServer(unittest.TestCase):
         app.popup = lambda title, items, start=0: offered.setdefault("items", items) and None
         app.pick_status_filter()
         self.assertEqual(offered["items"], ["(any status)", "To do (2)", "In progress (1)", "Review (1)", "Done (1)"])
+
+
+class FoldedGroups(unittest.TestCase):
+    def grouped(self):
+        app, scr = fresh()
+        app.group = True
+        app.apply_sort()
+        return app, scr
+
+    def test_fold_hides_the_rows_of_the_selected_group_and_keeps_the_selection_visible(self):
+        app, _ = self.grouped()
+        before = len([1 for k, _ in app.build_display() if k == "r"])
+        app.list_key(ord("-"))
+        rows = [i for k, i in app.build_display() if k == "r"]
+        self.assertLess(len(rows), before)
+        self.assertIn(app.sel, rows)
+        self.assertEqual(len([1 for k, _ in app.build_display() if k == "h"]), len(set(app.group_of(p) for p in app.pages)))
+
+    def test_arrows_skip_pages_in_a_folded_group(self):
+        app, _ = self.grouped()
+        app.sel = 0
+        app.list_key(ord("-"))
+        seen = []
+        for _ in range(len(app.pages)):
+            seen.append(app.sel)
+            app.list_key(ord("j"))
+        self.assertFalse(any(app.folded(i) for i in seen))
+
+    def test_equals_folds_all_then_unfolds_all(self):
+        app, _ = self.grouped()
+        app.list_key(ord("="))
+        self.assertEqual([k for k, _ in app.build_display() if k == "r"], [])
+        app.list_key(ord("="))
+        self.assertTrue(any(k == "r" for k, _ in app.build_display()))
+
+    def test_header_shows_the_arrow_and_a_click_on_it_toggles(self):
+        app, scr = self.grouped()
+        app.draw_list()
+        self.assertTrue(scr.has("▾ "))
+        hit = next(h for h in app.hits if h[3] == "group")
+        app.toggle_group(hit[4])
+        scr.clear() if hasattr(scr, "clear") else None
+        app.draw_list()
+        self.assertTrue(scr.has("▸ "))
+
+    def test_fold_does_nothing_when_not_grouped(self):
+        app, _ = fresh()
+        app.list_key(ord("-"))
+        self.assertEqual(app.collapsed, set())
+
+
+class PreviewLetter(unittest.TestCase):
+    def test_p_goes_into_the_preview_and_back(self):
+        app, _ = fresh(h=16, w=150)
+        app.draw_list()
+        app.list_key(ord("p"))
+        self.assertEqual(app.focus, "preview")
+        app.list_key(ord("p"))
+        self.assertEqual(app.focus, "list")

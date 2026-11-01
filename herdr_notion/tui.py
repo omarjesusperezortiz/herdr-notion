@@ -24,7 +24,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "keep the preview: go in and out of it"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -43,6 +43,8 @@ class App:
         self.want_quit = False
         self.sort_mode = 0  # index into SORTS
         self.group = False  # group rows under their status
+        self.collapsed = set()  # status names whose group is folded (only while grouped)
+        self.header_key = {}  # group header text -> status name, filled by build_display
         self.seen = self.load_seen()  # page id -> last edit time already looked at (for the unread dot)
         self.last_refresh = time.time()
         self.sel_id, self.sel_changed = None, time.time()
@@ -142,6 +144,8 @@ class App:
             self.guard(self.pick_filter, arg)
         elif action == "status":
             self.guard(self.set_status_filter, arg)
+        elif action == "group":
+            self.toggle_group(arg)
         elif action == "row" and arg < len(self.pages):
             again = self.last_click == (y, self.pages[arg]["id"]) and time.time() - self.last_click_at < 0.5
             self.sel, self.focus = arg, "list"
@@ -386,14 +390,52 @@ class App:
             k = nt.prop_text(p["properties"].get(self.cfg["status_property"])) or "No status"
             counts[k] = counts.get(k, 0) + 1
         out, last = [], None
+        self.header_key = {}
         for i, p in enumerate(self.pages):
             if self.group:
-                k = nt.prop_text(p["properties"].get(self.cfg["status_property"])) or "No status"
+                k = self.group_of(p)
                 if k != last:
-                    out.append(("h", "%s %s (%d)" % (self.MARK[self.status_kind(p)], k, counts[k])))
+                    text = "%s %s (%d)" % (self.MARK[self.status_kind(p)], k, counts[k])
+                    self.header_key[text] = k
+                    out.append(("h", text))
                     last = k
+                if k in self.collapsed:
+                    continue
             out.append(("r", i))
         return out
+
+    def group_of(self, page):
+        return nt.prop_text(page["properties"].get(self.cfg["status_property"])) or "No status"
+
+    def folded(self, i):
+        return self.group and self.group_of(self.pages[i]) in self.collapsed
+
+    def step_sel(self, d):
+        """Move the selection by one visible page (pages in a folded group are skipped); stays put at the ends."""
+        j = self.sel + d
+        while 0 <= j < len(self.pages) and self.folded(j):
+            j += d
+        if 0 <= j < len(self.pages):
+            self.sel = j
+
+    def toggle_group(self, key=None, everything=False):
+        """Fold or unfold one status group (the selected page's, or `key`), or all of them."""
+        if not self.group:
+            self.msg = "groups are off: g groups the list by status"
+            return
+        keys = [self.group_of(p) for p in self.pages]
+        if everything:
+            self.collapsed = set() if self.collapsed else set(keys)
+        else:
+            key = key or (self.group_of(self.pages[self.sel]) if self.pages else None)
+            if key is None:
+                return
+            self.collapsed ^= {key}
+        if self.pages and self.folded(self.sel):  # keep the selection on a page you can see
+            self.step_sel(1)
+            if self.folded(self.sel):
+                self.step_sel(-1)
+        self.msg = "%d of %d groups folded" % (len(self.collapsed & set(keys)), len(set(keys)))
 
     def load_seen(self):
         try:
@@ -718,7 +760,9 @@ class App:
         for r, (kind, i) in enumerate(disp[self.top:self.top + rows]):
             y = 3 + r
             if kind == "h":
-                self.scr.addnstr(y, 2, i, tw_total - 3, curses.A_BOLD | curses.A_DIM)
+                fold = "▸ " if self.header_key.get(i) in self.collapsed else "▾ "
+                self.scr.addnstr(y, 0, fold + i, tw_total - 1, curses.A_BOLD | curses.A_DIM)
+                self.hits.append((y, 0, tw_total, "group", self.header_key.get(i)))
                 continue
             pg = self.pages[i]
             on = i == self.sel
@@ -1003,7 +1047,7 @@ class App:
         if not page:
             return
         self.marked ^= {page["id"]}
-        self.sel = min(self.sel + 1, len(self.pages) - 1)
+        self.step_sel(1)
         self.msg = "%d marked: s sets their status, Esc clears" % len(self.marked) if self.marked else "no pages marked"
 
     def build_prompt(self):
@@ -1785,7 +1829,7 @@ class App:
 
     PALETTE = [("Change status", "s"), ("Delegate to an agent", "d"), ("Edit a property", "e"), ("New page", "n"),
                ("Show one status ([ ] moves along them)", "F"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
-               ("Notion views", "V"), ("Sort", "O"), ("Group by status", "g"), ("Compact rows", "z"),
+               ("Notion views", "V"), ("Sort", "O"), ("Group by status", "g"), ("Fold or unfold a group", "-"), ("Compact rows", "z"),
                ("Switch database", "D"), ("Refresh", "r"), ("Open in browser", "o"), ("Copy the link", "y"),
                ("Mouse on or off", "M"), ("Connection and sign-in", "S"), ("Help: every key", "?")]
 
@@ -2154,6 +2198,9 @@ class App:
             return self.on_mouse()
         if self.focus == "preview":
             return self.preview_key(k)
+        if k == ord("p") and self.pages and self.wide():  # p: same as →, kept for people who like a letter
+            self.focus = "preview"
+            return True
         if k in (curses.KEY_RIGHT, ord("l")) and self.pages:  # → goes in: into the preview, or into the page when there is none
             if self.wide():
                 self.focus = "preview"
@@ -2185,9 +2232,13 @@ class App:
             if self.sel >= n - 1 and self.has_more:
                 self.guard(self.load_more)
                 n = len(self.pages)
-            self.sel = min(self.sel + 1, max(n - 1, 0))
+            self.step_sel(1)
         elif k in (curses.KEY_UP, ord("k")):
-            self.sel = max(self.sel - 1, 0)
+            self.step_sel(-1)
+        elif k == ord("-"):
+            self.toggle_group()
+        elif k == ord("="):
+            self.toggle_group(everything=True)
         elif k in (10, 13, curses.KEY_ENTER) and n:
             self.guard(self.open_page, self.pages[self.sel])
         elif k == ord("f"):
@@ -2241,7 +2292,7 @@ class App:
     def preview_key(self, k):
         """Keys while the preview pane has the focus: scroll it; ←, Esc or Tab hand the focus back."""
         page = max(3, self.scr.getmaxyx()[0] - 8)
-        if k in (9, 27, curses.KEY_LEFT, ord("h"), ord("q")):
+        if k in (9, 27, curses.KEY_LEFT, ord("h"), ord("q"), ord("p")):
             self.focus = "list"
         elif k in (curses.KEY_DOWN, ord("j")):
             self.pscroll += 1
