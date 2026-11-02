@@ -345,3 +345,89 @@ class Digest(unittest.TestCase):
         self.assertIn("pages in All", digest.run(client, self.cfg(), tab="all", path=path)[0])
         with self.assertRaises(digest.cfgmod.ConfigError):
             digest.run(client, self.cfg(), tab="nope", path=path)
+
+
+import subprocess
+
+from herdr_notion import branch as br
+
+
+def have_git():
+    try:
+        return subprocess.run(["git", "--version"], capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+class Branch(unittest.TestCase):
+    def test_slug_and_branch_name_use_the_ticket_id_and_title(self):
+        self.assertEqual(br.slug("Fix: login redirect (staging)!"), "fix-login-redirect-staging")
+        pg = {"properties": {"ID": {"type": "rich_text", "rich_text": [{"plain_text": "ET-2546"}]},
+                             "Name": {"type": "title", "title": [{"plain_text": "Fix login redirect"}]}}}
+        self.assertEqual(br.branch_name(pg), "et-2546-fix-login-redirect")
+        self.assertEqual(br.branch_name(pg, "feat/"), "feat/et-2546-fix-login-redirect")
+        plain = {"properties": {"Name": {"type": "title", "title": [{"plain_text": "Add dark mode"}]}}}
+        self.assertEqual(br.branch_name(plain), "add-dark-mode")
+
+    def test_worktree_path_is_a_numbered_sibling(self):
+        taken = {"/r/app-fix-x"}
+        self.assertEqual(br.worktree_path("/r/app", "fix/x", exists=lambda p: p in taken), "/r/app-fix-x-2")
+
+    @unittest.skipUnless(have_git(), "git not installed")
+    def test_a_real_worktree_is_created_and_a_second_attempt_fails_cleanly(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        repo = os.path.join(d, "app")
+        os.mkdir(repo)
+        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+        for args in (["init", "-q", "-b", "main"], ["commit", "-q", "--allow-empty", "-m", "init"]):
+            subprocess.run(["git", "-C", repo] + args, check=True, env=env, capture_output=True)
+        self.assertEqual(br.repo_root(repo), repo)
+        self.assertEqual(br.repo_root(d), "")
+        self.assertEqual(br.base_ref(repo), "main")
+        path = br.worktree_path(repo, "feat/x")
+        br.create(repo, "feat/x", path, "main")
+        self.assertTrue(os.path.isdir(path))
+        self.assertEqual(subprocess.run(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True).stdout.strip(), "feat/x")
+        with self.assertRaises(br.BranchError):
+            br.create(repo, "feat/x", br.worktree_path(repo, "feat/x"), "main")
+
+
+class StartBranch(unittest.TestCase):
+    def run_flow(self, confirm=True, root="/r/app"):
+        app, _ = fresh()
+        calls = []
+        saved = (dg.list_agents, dg.start_agent, dg.send_prompt, br.repo_root, br.base_ref, br.create, br.worktree_path)
+        try:
+            dg.list_agents = lambda: [agent(name="claude")]
+            br.repo_root = lambda cwd, runner=None: root
+            br.base_ref = lambda r, runner=None: "main"
+            br.worktree_path = lambda r, b, exists=None: "/r/app-wt"
+            br.create = lambda r, b, p, base, runner=None: calls.append(("create", r, b, p, base))
+            dg.start_agent = lambda cmd, cwd, label, cfg, ws=None, **kw: calls.append(("start", cmd, cwd)) or "w9:p9"
+            dg.send_prompt = lambda pane, text, runner=None: calls.append(("prompt", pane, text))
+            app.popup = lambda title, items, start=0: 0
+            app.ask = lambda label, initial="": initial
+            asked = []
+            app.confirm = lambda text: asked.append(text) or confirm
+            app.start_branch()
+        finally:
+            dg.list_agents, dg.start_agent, dg.send_prompt, br.repo_root, br.base_ref, br.create, br.worktree_path = saved
+        return app, calls, asked
+
+    def test_the_flow_creates_the_worktree_then_starts_the_agent_in_it(self):
+        app, calls, asked = self.run_flow()
+        self.assertEqual([c[0] for c in calls], ["create", "start", "prompt"])
+        self.assertEqual(calls[0][2:], ("et-%d-%s" % (100 + int(app.pages[0]["id"][1:]), nt.page_title(app.pages[0]).lower()), "/r/app-wt", "main"))
+        self.assertEqual(calls[1][2], "/r/app-wt")
+        self.assertIn("You are on branch", calls[2][2])
+        self.assertIn(app.pages[0]["id"], app.delegations)
+        self.assertEqual(len(asked), 1)
+
+    def test_declining_creates_nothing(self):
+        app, calls, _ = self.run_flow(confirm=False)
+        self.assertEqual(calls, [])
+        self.assertEqual(app.msg, "cancelled")
+
+    def test_a_folder_outside_git_explains_itself(self):
+        app, calls, _ = self.run_flow(root="")
+        self.assertEqual(calls, [])

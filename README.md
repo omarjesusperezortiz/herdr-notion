@@ -125,6 +125,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `V` | open one of the database's Notion views as a tab: its filters, its order, real paging |
 | `B` | Board: a column per status. `h` `l` change column, `j` `k` card, `H` `L` move the card to the next status (asks first), `⏎` opens it, `B` or `Esc` goes back to the list |
 | `L` | Open a page linked from this one (a relation property); `←` comes back. The preview and the page show `☑ 2/3 subtasks · ↗ 2 related` when there are to-dos or links |
+| `w` | New git worktree and branch for the ticket (named like `et-2546-fix-login-redirect`, from `main` when it exists), then an agent starts inside it with the ticket as the prompt. Asks for the repository, the branch name and a confirm. Your current checkout is not touched. `branch_prefix = "feat/"` under `[delegate]` adds a prefix |
 | `Q` | Quick filter on what is loaded: changed today or this week, unread, no assignee, due this week. `Esc` clears it |
 | `p` | Show or hide the preview pane. Hidden, the table uses the whole width and `→` opens the page |
 | `-` / `=` | Fold or unfold the selected status group / all groups (with `g` grouping on; clicking a group header does the same) |

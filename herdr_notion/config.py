@@ -61,6 +61,7 @@ def normalize(raw):
             "prompt": d.get("prompt", DEFAULT_PROMPT),
             "max_body_chars": int(d.get("max_body_chars", 6000)),
             "default_cwd": d.get("default_cwd", ""),
+            "branch_prefix": str(d.get("branch_prefix", "")),
             "startup_delay_ms": int(d.get("startup_delay_ms", 1500)),
             "wait_ready_ms": int(d.get("wait_ready_ms", 30000)),
             "agents": d.get("agents") or [{"name": "claude", "command": ["claude"]}],

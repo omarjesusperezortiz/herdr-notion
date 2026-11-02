@@ -38,4 +38,8 @@ Each is done only when its tests pass. Whatever is tested only against fakes is 
 - [x] **R3 Board view.** `B` opens columns by status. h/l column, j/k card, H/L move the card (confirm), Enter opens.
 - [x] **R4 Subtasks and relations in the preview.** A summary line (to-do progress, linked pages) in the preview and the page; `L` opens a linked page, `←` comes back. Sub-items are counted from the page's to-do lines.
 - [x] **R5 Digest.** `python3 -m herdr_notion digest [--tab NAME] [--peek]` prints status changes, new pages and edits since the last run. It keeps its own `digest.json` (the seen file only has edit times, so it cannot tell a status change).
-- [ ] **R6 Branch from a ticket.** `b` proposes a branch name, asks, creates it and starts an agent there.
+- [x] **R6 Branch from a ticket.** `w` (not `b`, which scrolls the preview) makes a git worktree and branch, asks first, and starts an agent in it. A worktree keeps your current checkout untouched; the mockup said "create a branch".
+
+Tested only against fakes: agent matching (herdr is faked), the board and quick-filter screens (fake terminal), moving a card
+and starting a branch's agent (fake client and fake herdr). Tested for real: the git worktree creation (a temporary
+repository), the digest command's read path against the real database (read-only, `--peek`).

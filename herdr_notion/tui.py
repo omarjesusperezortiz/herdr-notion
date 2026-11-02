@@ -13,6 +13,7 @@ import traceback
 import webbrowser
 from datetime import datetime, timedelta, timezone
 
+from . import branch as br
 from . import config as cfgmod
 from . import delegate as dg
 from . import mcpbackend as mb
@@ -25,7 +26,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -178,7 +179,7 @@ class App:
         """Run fn, turning expected errors into a status message."""
         try:
             return fn(*a)
-        except (nt.NotionError, dg.HerdrError, cfgmod.ConfigError, oauth.OAuthError) as e:
+        except (nt.NotionError, dg.HerdrError, br.BranchError, cfgmod.ConfigError, oauth.OAuthError) as e:
             self.report(e)
         return None
 
@@ -1560,6 +1561,47 @@ class App:
         self.track(page, pane, kinds[j]["name"])
         self.msg = "started %s and sent prompt" % kinds[j]["name"]
 
+    def start_branch(self):
+        """w: a git worktree and branch named after the ticket, with an agent started inside it and the ticket as prompt."""
+        page, prompt = self.build_prompt()
+        if not page:
+            return
+        dcfg = self.cfg["delegate"]
+        self.redraw()
+        self.scr.refresh()
+        agents = dg.list_agents()
+        roots = []
+        for c in dg.unique_cwds(agents, dcfg["default_cwd"]):
+            root = br.repo_root(os.path.expanduser(c))
+            if root and root not in roots:
+                roots.append(root)
+        k = self.popup("Repository", [self.tilde(r) for r in roots] + ["type path…"])
+        if k is None:
+            return
+        root = roots[k] if k < len(roots) else br.repo_root(os.path.expanduser(self.ask("repository: ", os.getcwd()) or ""))
+        if not root:
+            self.msg = "that is not inside a git repository"
+            return
+        name = self.ask("branch: ", br.branch_name(page, dcfg.get("branch_prefix", "")))
+        if not name:
+            return
+        kinds = dcfg["agents"]
+        j = self.popup("Agent in the new branch", [a["name"] for a in kinds])
+        if j is None:
+            return
+        base = br.base_ref(root)
+        path = br.worktree_path(root, name)
+        if not self.confirm("Branch %s from %s in %s, start %s there?" % (name, base, self.tilde(path), kinds[j]["name"])):
+            self.msg = "cancelled"
+            return
+        self.note("Creating the worktree…")
+        br.create(root, name, path, base)
+        self.note("Starting %s…" % kinds[j]["name"])
+        pane = dg.start_agent(kinds[j]["command"], path, nt.page_title(page)[:30], dcfg, os.environ.get("HERDR_WORKSPACE_ID"))
+        dg.send_prompt(pane, "%s\n\nYou are on branch %s in %s." % (prompt, name, path))
+        self.track(page, pane, kinds[j]["name"])
+        self.msg = "branch %s created, %s started in %s" % (name, kinds[j]["name"], self.tilde(path))
+
     def check_connection(self):
         """Who is signed in, and can the configured database be read?"""
         st_ = {"who": "", "signed_in": False, "db": "", "db_ok": False, "login": oauth.load()}
@@ -2068,7 +2110,7 @@ class App:
             self.msg = "tabs saved"
 
     PALETTE = [("Change status", "s"), ("Delegate to an agent", "d"), ("Edit a property", "e"), ("New page", "n"),
-               ("Show one status ([ ] moves along them)", "F"), ("Quick filter: changed today, no assignee, due…", "Q"), ("Board: a column per status", "B"), ("Open a linked page", "L"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
+               ("Show one status ([ ] moves along them)", "F"), ("Quick filter: changed today, no assignee, due…", "Q"), ("Board: a column per status", "B"), ("Open a linked page", "L"), ("Branch (worktree) for this ticket", "w"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
                ("Notion views", "V"), ("Sort", "O"), ("Group by status", "g"), ("Fold or unfold a group", "-"), ("Compact rows", "z"),
                ("Switch database", "D"), ("Refresh", "r"), ("Open in browser", "o"), ("Copy the link", "y"),
                ("Mouse on or off", "M"), ("Connection and sign-in", "S"), ("Help: every key", "?")]
@@ -2426,7 +2468,9 @@ class App:
         self.open_page(target)
 
     def common_key(self, k):
-        if k == ord("L"):
+        if k == ord("w"):
+            self.guard(self.start_branch)
+        elif k == ord("L"):
             self.guard(self.open_related)
         elif k == ord("s"):
             self.guard(self.change_status)
