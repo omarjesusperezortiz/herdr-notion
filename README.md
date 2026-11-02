@@ -128,10 +128,10 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `w` | New git worktree and branch for the ticket (named like `et-2546-fix-login-redirect`, from `main` when it exists), then an agent starts inside it with the ticket as the prompt. Asks for the repository, the branch name and a confirm. Your current checkout is not touched. `branch_prefix = "feat/"` under `[delegate]` adds a prefix |
 | `Q` | Quick filter on what is loaded: changed today or this week, unread, no assignee, due this week. `Esc` clears it |
 | `p` | Show or hide the preview pane. Hidden, the table uses the whole width and `→` opens the page |
-| `-` / `=` | Fold or unfold the selected status group / all groups (with `g` grouping on; clicking a group header does the same) |
+| `-` / `=` | Fold or unfold just the selected group / all groups (`-` turns grouping on if it is off; clicking a group header does the same) |
 | `→` / `←` | `→` goes into the preview (↑↓, PgUp/PgDn, `g`/`G` scroll it) or opens the page when the pane has no preview; `←` comes back. Space and `b` scroll the preview without going in |
 | `J` / `K`, Space, `b` | scroll the preview a few lines / page through the list |
-| `O` / `g` | sort (newest edit, title, status) / group the rows by status, in the order the status options have in Notion (to do, in progress, done). Set `group_order = ["In progress", "To do"]` under `[notion]` to put some first |
+| `O` / `g` | sort (newest edit, title, status) / group the rows by status (press `g` again to fold every group, once more for the plain list), in the order the status options have in Notion (to do, in progress, done). Set `group_order = ["In progress", "To do"]` under `[notion]` to put some first |
 | `s` | change status: pick an option, then confirm with `y` |
 | `d` | delegate: pick a running agent (status, cwd) or **+ start new agent…**, then the prompt is sent |
 | `o` | open the page in the browser |

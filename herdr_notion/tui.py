@@ -26,7 +26,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -467,9 +467,9 @@ class App:
 
     def toggle_group(self, key=None, everything=False):
         """Fold or unfold one status group (the selected page's, or `key`), or all of them."""
-        if not self.group:
-            self.msg = "groups are off: g groups the list by status"
-            return
+        if not self.group:  # folding a group you cannot see: turn grouping on first
+            self.group = True
+            self.apply_sort()
         keys = [self.group_of(p) for p in self.pages]
         if everything:
             self.collapsed = set() if self.collapsed else set(keys)
@@ -2583,10 +2583,18 @@ class App:
             self.sort_mode = (self.sort_mode + 1) % len(self.SORTS)
             self.apply_sort()
             self.msg = "sorted by %s" % self.SORTS[self.sort_mode][1]
-        elif k == ord("g"):
-            self.group = not self.group
+        elif k == ord("g"):  # one key, three states: list, groups open, groups folded
+            if not self.group:
+                self.group, self.collapsed = True, set()
+                self.msg = "grouped by status · g again folds the groups"
+            elif not self.collapsed:
+                self.apply_sort()
+                self.toggle_group(everything=True)
+                self.msg = "groups folded · g again goes back to the plain list"
+            else:
+                self.group, self.collapsed = False, set()
+                self.msg = "plain list"
             self.apply_sort()
-            self.msg = "grouped by status" if self.group else "ungrouped"
         elif k == ord("r"):
             self.refresh_async("Refreshing…")
         elif k == ord("R"):

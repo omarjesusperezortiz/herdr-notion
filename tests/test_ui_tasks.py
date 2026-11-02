@@ -574,9 +574,22 @@ class FoldedGroups(unittest.TestCase):
         app.draw_list()
         self.assertTrue(scr.has("▸ "))
 
-    def test_fold_does_nothing_when_not_grouped(self):
+    def test_minus_turns_grouping_on_by_itself(self):
         app, _ = fresh()
         app.list_key(ord("-"))
+        self.assertTrue(app.group)
+        self.assertEqual(len(app.collapsed), 1)
+
+    def test_g_cycles_list_groups_folded_list(self):
+        app, _ = fresh()
+        app.list_key(ord("g"))
+        self.assertTrue(app.group)
+        self.assertEqual(app.collapsed, set())
+        app.list_key(ord("g"))
+        self.assertTrue(app.group)
+        self.assertEqual([k for k, _ in app.build_display() if k == "r"], [])
+        app.list_key(ord("g"))
+        self.assertFalse(app.group)
         self.assertEqual(app.collapsed, set())
 
 
