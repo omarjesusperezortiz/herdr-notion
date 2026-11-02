@@ -58,6 +58,7 @@ Please do the work it describes and summarize what you changed when done.
 max_body_chars = 6000
 # default_cwd = "~/projects"
 # branch_prefix = "feat/"   # w (new worktree and branch for a ticket) puts this before the branch name
+# ask_note = false     # d and w ask for a note to put above the task; false sends the task as it is
 
 # Start-new-agent wait: after `startup_delay_ms`, wait up to `wait_ready_ms`
 # for the agent to be detected and idle before sending the prompt.

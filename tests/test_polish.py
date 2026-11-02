@@ -1367,3 +1367,48 @@ class ThreeWidths(unittest.TestCase):
         app.open_page = lambda p: opened.append(p["id"])
         app.list_key(10)
         self.assertEqual(opened, [app.pages[1]["id"]])
+
+
+class DelegateNote(unittest.TestCase):
+    """d and w let you put a line of your own above the task before it is sent."""
+
+    def setUp(self):
+        from herdr_notion import config as cfgmod
+        self.app, _ = make_app([page(1, "Alpha")])
+        self.app.cfg["delegate"] = dict(cfgmod.load()["delegate"])
+        self.sent = []
+        self.app.ask = lambda label, initial="": self.answer
+        self.app.popup = lambda title, items, **kw: 0
+        self.app.track = lambda *a, **k: None
+        self.app.build_prompt = lambda: (self.app.pages[0], "THE TASK")
+        agents = [{"pane_id": "w1:p1", "name": "orch", "agent": "claude", "status": "idle", "cwd": "/x"}]
+        self.patches = [mock.patch("herdr_notion.delegate.list_agents", lambda *a, **k: agents),
+                        mock.patch("herdr_notion.delegate.send_prompt", lambda pane, text, *a: self.sent.append((pane, text)))]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def test_the_note_goes_above_the_task(self):
+        self.answer = "focus on the tests"
+        self.app.delegate()
+        self.assertEqual(self.sent, [("w1:p1", "focus on the tests\n\nTHE TASK")])
+
+    def test_enter_with_nothing_typed_sends_the_task_as_it_is(self):
+        self.answer = "  "
+        self.app.delegate()
+        self.assertEqual(self.sent, [("w1:p1", "THE TASK")])
+
+    def test_escape_cancels_the_send(self):
+        self.answer = None
+        self.app.delegate()
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.app.msg, "cancelled")
+
+    def test_ask_note_false_skips_the_question(self):
+        self.app.cfg["delegate"]["ask_note"] = False
+        self.answer = "never asked"
+        self.app.delegate()
+        self.assertEqual(self.sent, [("w1:p1", "THE TASK")])

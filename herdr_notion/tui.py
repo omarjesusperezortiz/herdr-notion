@@ -2399,6 +2399,18 @@ class App:
         self.save_delegations()
         self.toast("closed the pane of %s" % name)
 
+    def with_note(self, prompt):
+        """Let the user add a line of their own to the task being sent: it goes first, the task follows as the attachment.
+        Enter with nothing typed sends the task as it is; Esc cancels the send (returns None)."""
+        if not self.cfg["delegate"].get("ask_note", True):
+            return prompt
+        note = self.ask("add a note for the agent (⏎ sends as is, Esc cancels): ")
+        if note is None:
+            self.msg = "cancelled"
+            return None
+        note = note.strip()
+        return "%s\n\n%s" % (note, prompt) if note else prompt
+
     def delegate(self):
         page, prompt = self.build_prompt()
         if not page:
@@ -2412,6 +2424,9 @@ class App:
         if i is None:
             return
         if i < len(agents):
+            prompt = self.with_note(prompt)
+            if prompt is None:
+                return
             self.note("Sending prompt…")
             dg.send_prompt(agents[i]["pane_id"], prompt)
             self.track(page, agents[i]["pane_id"], agents[i]["name"] or agents[i]["agent"])
@@ -2429,6 +2444,9 @@ class App:
         if not cwd:
             return
         cwd = os.path.expanduser(os.path.expandvars(cwd))
+        prompt = self.with_note(prompt)
+        if prompt is None:
+            return
         self.note("Starting %s…" % kinds[j]["name"])
         pane = dg.start_agent(kinds[j]["command"], cwd, self.tab_label(page), dcfg,
                               os.environ.get("HERDR_WORKSPACE_ID"))
@@ -2468,6 +2486,9 @@ class App:
         path = br.worktree_path(root, name)
         if not self.confirm("Branch %s from %s in %s, start %s there?" % (name, base, self.tilde(path), kinds[j]["name"])):
             self.msg = "cancelled"
+            return
+        prompt = self.with_note(prompt)
+        if prompt is None:
             return
         self.note("Creating the worktree…")
         br.create(root, name, path, base)

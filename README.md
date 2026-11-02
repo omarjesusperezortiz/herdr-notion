@@ -139,7 +139,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `J` / `K`, Space, `b` | scroll the preview a few lines / page through the list |
 | `O` / `g` | sort (newest edit, title, status) / group the rows by status (press `g` again to fold every group, once more for the plain list). While grouped, `↑` can land on a group header: `←` folds it, `→` opens it, `⏎` toggles; `←` on a page jumps up to its header, in the order the status options have in Notion (to do, in progress, done). Set `group_order = ["In progress", "To do"]` under `[notion]` to put some first |
 | `s` | change status: pick an option, then confirm with `y` |
-| `d` | delegate: pick a running agent (status, cwd) or **+ start new agent…**, then the prompt is sent |
+| `d` | delegate: pick a running agent (status, cwd) or **+ start new agent…**, then a line asks for an optional note, which goes above the task (⏎ alone sends the task as it is, Esc cancels; `ask_note = false` in `[delegate]` turns the question off) |
 | `o` | open the page in the browser |
 | `]` / `[` | next / previous page while reading one |
 | `y` / `Y` | copy the page URL / the delegate prompt (pbcopy, wl-copy, xclip or xsel) |
