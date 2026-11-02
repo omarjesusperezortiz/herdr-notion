@@ -1,5 +1,6 @@
 """Pure helpers for Notion pages: filters, properties, flattening, prompt rendering."""
 import json
+import re
 import unicodedata
 
 API = "https://api.notion.com/v1"
@@ -92,6 +93,32 @@ def prop_text(prop):
     if t in ("created_by", "last_edited_by"):
         return (v or {}).get("name", "")
     return ""
+
+
+TICKET_ID = re.compile(r"^[A-Za-z]{2,8}-\d+$")
+
+
+def page_ticket_id(page):
+    """The page's ticket id (like ET-2546): a unique_id property, or a text property holding just that shape."""
+    for p in page.get("properties", {}).values():
+        if p.get("type") in ("unique_id", "rich_text", "formula"):
+            text = prop_text(p).strip()
+            if TICKET_ID.match(text):
+                return text
+    return ""
+
+
+def match_agent(page, agents):
+    """The agent that works on this page, found from what herdr shows about it: its title, name or branch holds the
+    ticket id (ET-2546) or the whole page title. None when nothing matches."""
+    tid, title = page_ticket_id(page), page_title(page).lower()
+    for a in agents:
+        hay = " ".join((a.get("title", ""), a.get("name", ""), a.get("branch", ""))).lower()
+        if tid and re.search(r"(?<![a-z0-9])%s(?!\d)" % re.escape(tid.lower()), hay):
+            return a
+        if len(title) >= 12 and title in hay:
+            return a
+    return None
 
 
 def page_title(page):
@@ -229,6 +256,22 @@ def relative_time(iso, now=None):
         if secs >= n:
             return "%d%s" % (secs // n, unit)
     return "now"
+
+
+def parse_time(iso):
+    """Aware datetime for an ISO-8601 timestamp or date, or None."""
+    from datetime import datetime, timezone
+    try:
+        t = datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def edited_within(iso, seconds, now=None):
+    from datetime import datetime, timezone
+    t = parse_time(iso)
+    return bool(t) and 0 <= ((now or datetime.now(timezone.utc)) - t).total_seconds() <= seconds
 
 
 def style_lines(lines):

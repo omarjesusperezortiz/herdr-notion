@@ -11,6 +11,7 @@ import threading
 import time
 import traceback
 import webbrowser
+from datetime import datetime, timedelta, timezone
 
 from . import config as cfgmod
 from . import delegate as dg
@@ -24,7 +25,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -52,12 +53,16 @@ class App:
         self.delegations = self.load_delegations()  # page id -> {"pane", "agent", "title", "seen_working", "done"}
         self.finished = []  # page ids whose agent just went idle: the main loop offers to move them to review
         self.next_agent_poll = 0
+        self.found = {}  # page id -> agent matched from herdr's titles (not delegated from here)
+        self.herdr_ok = True  # false once herdr cannot be reached: the quiet matching stops asking
         self.fidx = 0
         self.query = ""
         self.all = []  # every page loaded for this tab, in the chosen order
         self.pages = []  # what is shown: `all` narrowed by the type-ahead text and the status filter
         self.live = ""  # type-ahead text (filters the loaded pages as you type)
         self.status_filter = ""  # show only this status
+        self.quick = ""  # a quick filter key (see QUICK), applied to the loaded pages
+        self.now = lambda: datetime.now(timezone.utc)
         self.pscroll = 0  # scroll offset of the preview pane
         self.mouse_on = False
         self.last_click, self.last_click_at = None, 0.0
@@ -342,7 +347,45 @@ class App:
         import unicodedata
         return "".join(c for c in unicodedata.normalize("NFD", text.lower()) if unicodedata.category(c) != "Mn")
 
+    QUICK = [("today", "Changed today"), ("week", "Changed this week"), ("unread", "Unread (edited since you looked)"),
+             ("noassignee", "No assignee"), ("due", "Due this week")]
+
+    def prop_of(self, kinds, hints=()):
+        """Name of the first property of one of `kinds`, preferring names that hold one of `hints`."""
+        props = self.client.discover().get("properties", {}) if self.client else {}
+        named = [n for n, p in props.items() if p.get("type") in kinds]
+        return next((n for n in named if any(h in n.lower() for h in hints)), named[0] if named else "")
+
+    def quick_ok(self, page):
+        q = self.quick
+        if q in ("today", "week"):
+            return nt.edited_within(page.get("last_edited_time"), 86400 if q == "today" else 7 * 86400, self.now())
+        if q == "unread":
+            return self.unread(page)
+        if q == "noassignee":
+            prop = self.prop_of(("people", "relation"), ("assign", "owner"))
+            return bool(prop) and not nt.prop_text(page["properties"].get(prop))
+        if q == "due":
+            prop = self.prop_of(("date",), ("due", "deadline"))
+            start = ((page["properties"].get(prop) or {}).get("date") or {}).get("start") if prop else None
+            t = nt.parse_time(start)
+            today = self.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            return bool(t) and today <= t <= today + timedelta(days=7) and self.status_kind(page) != "done"
+        return True
+
+    def pick_quick_filter(self):
+        names = ["(no quick filter)"] + [label for _, label in self.QUICK]
+        cur = 1 + [k for k, _ in self.QUICK].index(self.quick) if self.quick else 0
+        i = self.popup("Quick filter" + (" (loaded pages)" if self.has_more else ""), names, cur)
+        if i is None:
+            return
+        self.quick = self.QUICK[i - 1][0] if i else ""
+        self.refilter()
+        self.msg = ("quick filter: %s" % dict(self.QUICK)[self.quick]) if self.quick else "quick filter off"
+
     def matches(self, page):
+        if self.quick and not self.quick_ok(page):
+            return False
         if self.live and self.fold(self.live) not in self.fold(nt.page_title(page)):
             return False
         if self.status_filter and nt.prop_text(page["properties"].get(self.cfg["status_property"])) != self.status_filter:
@@ -668,6 +711,8 @@ class App:
             extras += ' · typed "%s"' % self.live
         if self.status_filter:
             extras += " · status: %s" % self.status_filter
+        if self.quick:
+            extras += " · %s" % dict(self.QUICK)[self.quick].lower()
         if self.sort_mode:
             extras += " · sort: %s" % self.SORTS[self.sort_mode][1]
         if self.group:
@@ -753,7 +798,7 @@ class App:
         # They are dropped from the right until the title has at least 20 columns.
         extra = [c for c in self.cfg["columns"] if c != self.cfg["status_property"]]
         cols = ([] if self.compact else [("STATUS", 14)]) + [(c.upper(), min(14, max(len(c), 6))) for c in extra] \
-            + ([("AGENT", 12)] if any(p["id"] in self.delegations for p in self.pages) else []) + [("EDITED", 6)]
+            + ([("AGENT", 12)] if any(p["id"] in self.delegations or p["id"] in self.found for p in self.pages) else []) + [("EDITED", 6)]
         while cols and tw_total - 4 - sum(cw + 2 for _, cw in cols) < 20:
             cols.pop()
         tw = max(10, tw_total - 4 - sum(cw + 2 for _, cw in cols))
@@ -1242,6 +1287,10 @@ class App:
         """(text, attr) for the AGENT column of a page, or None when it was never delegated."""
         d = self.delegations.get(page["id"])
         if not d:
+            a = self.found.get(page["id"])
+            if a:
+                return "%s %s" % ("◉" if a["status"] == "working" else "○", a["name"] or a["agent"]), \
+                    self.cp(2) if a["status"] == "working" else curses.A_DIM
             return None
         if d.get("done"):
             return "✔ %s" % d["agent"], self.cp(3)
@@ -1251,12 +1300,40 @@ class App:
     def poll_agents(self):
         """Every few seconds ask herdr how the delegated agents are doing (never while something else loads)."""
         active = [d for d in self.delegations.values() if not d.get("done")]
-        if not active or self.job or time.time() < self.next_agent_poll:
+        if not (active or (self.pages and self.herdr_ok)) or self.job or time.time() < self.next_agent_poll:
             return
-        self.next_agent_poll = time.time() + 5
-        self.start_job("", dg.list_agents, self.on_agents, "agents")
+        self.next_agent_poll = time.time() + (5 if active else 10)
+        self.start_job("", self.quiet_agents, self.on_agents, "agents")
+
+    def quiet_agents(self):
+        """herdr's agent list, or None when herdr cannot be reached (matching is a bonus, it must not nag)."""
+        try:
+            return dg.list_agents()
+        except dg.HerdrError:
+            self.herdr_ok = False
+            return None
+
+    def adopt(self, agents):
+        """Match loaded pages to agents herdr shows. A match that is working is tracked like a delegation, so its
+        end offers the status change; an idle match only gets the badge."""
+        self.found = {}
+        for pg in getattr(self, "pages", []):
+            if pg["id"] in self.delegations:
+                continue
+            a = nt.match_agent(pg, agents)
+            if not a:
+                continue
+            if a["status"] == "working":
+                self.delegations[pg["id"]] = {"pane": a["pane_id"], "agent": a["name"] or a["agent"], "title": nt.page_title(pg),
+                                              "seen_working": True, "done": False, "status": "working", "auto": True}
+            else:
+                self.found[pg["id"]] = a
 
     def on_agents(self, agents):
+        if agents is None:
+            return
+        self.herdr_ok = True
+        self.adopt(agents)
         status = {a["pane_id"]: a["status"] for a in agents}
         for pid, d in self.delegations.items():
             if d.get("done"):
@@ -1669,6 +1746,7 @@ class App:
             self.fidx = idx
             self.query = ""
             self.status_filter = ""
+            self.quick = ""
             self.server_status = False
             self.refresh_async("Loading %s…" % self.cfg["filters"][idx]["name"])
 
@@ -1839,7 +1917,7 @@ class App:
             self.msg = "tabs saved"
 
     PALETTE = [("Change status", "s"), ("Delegate to an agent", "d"), ("Edit a property", "e"), ("New page", "n"),
-               ("Show one status ([ ] moves along them)", "F"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
+               ("Show one status ([ ] moves along them)", "F"), ("Quick filter: changed today, no assignee, due…", "Q"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
                ("Notion views", "V"), ("Sort", "O"), ("Group by status", "g"), ("Fold or unfold a group", "-"), ("Compact rows", "z"),
                ("Switch database", "D"), ("Refresh", "r"), ("Open in browser", "o"), ("Copy the link", "y"),
                ("Mouse on or off", "M"), ("Connection and sign-in", "S"), ("Help: every key", "?")]
@@ -1853,7 +1931,7 @@ class App:
     def clear_filters(self):
         """Esc: drop the status filter and the search before quitting."""
         had_query = bool(self.query) or self.server_status
-        self.live, self.status_filter, self.query = "", "", ""
+        self.live, self.status_filter, self.query, self.quick = "", "", "", ""
         self.server_status = False
         self.refilter()
         if had_query:
@@ -2226,7 +2304,7 @@ class App:
             self.marked.clear()
             self.msg = "marks cleared"
             return True
-        if k == 27 and (self.query or self.live or self.status_filter):
+        if k == 27 and (self.query or self.live or self.status_filter or self.quick):
             self.clear_filters()
             return True
         if k in (ord("q"), 27):
@@ -2264,6 +2342,8 @@ class App:
             self.cycle_status(1 if k == ord("]") else -1)
         elif k == ord("0") and self.status_filter:
             self.set_status_filter("")
+        elif k == ord("Q"):
+            self.guard(self.pick_quick_filter)
         elif k == ord("V"):
             self.guard(self.pick_view)
         elif k == ord("x"):

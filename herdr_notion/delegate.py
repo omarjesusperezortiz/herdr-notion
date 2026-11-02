@@ -39,6 +39,7 @@ def list_agents(runner=run):
         "agent": a.get("agent", ""),
         "status": a.get("agent_status", ""),
         "cwd": a.get("cwd", ""),
+        "title": a.get("terminal_title_stripped") or a.get("terminal_title", ""),
     } for a in agents]
 
 

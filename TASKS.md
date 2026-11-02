@@ -26,3 +26,16 @@ Source: the UI proposal. Each task is done only when its tests pass (`python3 -m
 Last: README key table, in-app help, push, report what was tested only against fakes.
 
 Not built from T4: clicking a footer hint. Wheel-down relies on ncurses reporting button 5; checked only with fake events.
+
+# Round 2 (from the "next round" artifact)
+
+Each is done only when its tests pass. Whatever is tested only against fakes is listed at the end.
+
+- [x] **R1 Quick filters in the palette.** Changed today, changed this week, assigned to me, no assignee, due this week.
+  They stack on the current tab, show in the header, and Esc clears them.
+- [x] **R2 Agent badges.** Delegation puts the page id in the prompt. A herdr agent whose prompt or recent output holds
+  that id is matched to the row (working, idle). A finished agent offers to set the status.
+- [ ] **R3 Board view.** `B` opens columns by status. h/l column, j/k card, H/L move the card (confirm), Enter opens.
+- [ ] **R4 Subtasks and relations in the preview.** Sub-items and related pages listed under the properties; Enter opens one.
+- [ ] **R5 Digest.** `herdr-notion digest` prints what changed since the last look, from the seen file.
+- [ ] **R6 Branch from a ticket.** `b` proposes a branch name, asks, creates it and starts an agent there.
