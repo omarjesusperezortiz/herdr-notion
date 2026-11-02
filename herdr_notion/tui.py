@@ -25,7 +25,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -45,6 +45,7 @@ class App:
         self.sort_mode = 0  # index into SORTS
         self.group = False  # group rows under their status
         self.preview_on = True  # p hides the preview pane
+        self.trail = []  # pages left behind by opening a related page, newest last
         self.board, self.bcol, self.brow, self.bfirst = False, 0, 0, 0  # board view: on, column, card, first column shown
         self.collapsed = set()  # status names whose group is folded (only while grouped)
         self.header_key = {}  # group header text -> status name, filled by build_display
@@ -767,6 +768,10 @@ class App:
         if body is None:
             self.scr.addnstr(y, x0, "Loading…", width, curses.A_DIM)
             return
+        summary = nt.relations_line(p, body)
+        if summary:
+            self.scr.addnstr(y, x0, summary, width, self.cp(2))
+            y += 1
         kinds = nt.style_lines(body)
         wrapped = []
         for l, kind in zip(body, kinds):
@@ -1043,7 +1048,9 @@ class App:
             for k, v in props[i:i + step]:
                 row += ("%-9s %s" % (k[:9], v)).ljust(half)[:half]
             lines.append((" " + row, 0))
-        lines += [(" " + page.get("url", ""), curses.A_DIM), ("", 0), ("─" * (w - 1), curses.A_DIM)]
+        summary = nt.relations_line(page, self.detail["body"].split("\n"))
+        lines += [(" " + page.get("url", ""), curses.A_DIM)] + ([(" " + summary, self.cp(2))] if summary else []) \
+            + [("", 0), ("─" * (w - 1), curses.A_DIM)]
         body = self.detail["body"].split("\n")
         for l, kind in zip(body, nt.style_lines(body)):
             attr = {"heading": curses.A_BOLD | curses.A_UNDERLINE, "rule": curses.A_DIM,
@@ -2061,7 +2068,7 @@ class App:
             self.msg = "tabs saved"
 
     PALETTE = [("Change status", "s"), ("Delegate to an agent", "d"), ("Edit a property", "e"), ("New page", "n"),
-               ("Show one status ([ ] moves along them)", "F"), ("Quick filter: changed today, no assignee, due…", "Q"), ("Board: a column per status", "B"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
+               ("Show one status ([ ] moves along them)", "F"), ("Quick filter: changed today, no assignee, due…", "Q"), ("Board: a column per status", "B"), ("Open a linked page", "L"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
                ("Notion views", "V"), ("Sort", "O"), ("Group by status", "g"), ("Fold or unfold a group", "-"), ("Compact rows", "z"),
                ("Switch database", "D"), ("Refresh", "r"), ("Open in browser", "o"), ("Copy the link", "y"),
                ("Mouse on or off", "M"), ("Connection and sign-in", "S"), ("Help: every key", "?")]
@@ -2403,8 +2410,25 @@ class App:
             if self.want_quit:
                 return
 
+    def open_related(self):
+        """L: pick one of the pages linked from this page (relations) and open it; ← comes back."""
+        page = self.current()
+        rel = nt.page_relations(page) if page else []
+        if not rel:
+            self.msg = "this page has no linked pages"
+            return
+        i = self.popup("Related pages", ["%s  (%s)" % (t or "untitled page", prop) for prop, _, t in rel])
+        if i is None:
+            return
+        self.note("Opening…")
+        target = self.client.get_page(rel[i][1])
+        self.trail = (self.trail + [self.detail["page"]]) if self.detail else []
+        self.open_page(target)
+
     def common_key(self, k):
-        if k == ord("s"):
+        if k == ord("L"):
+            self.guard(self.open_related)
+        elif k == ord("s"):
             self.guard(self.change_status)
         elif k == ord("d"):
             self.guard(self.delegate)
@@ -2555,7 +2579,10 @@ class App:
         if k == curses.KEY_MOUSE:
             return self.on_mouse()
         if k in (ord("q"), 27, curses.KEY_LEFT, ord("h")):
-            self.detail = None
+            if self.trail:  # came here from a related page: go back to it
+                self.open_page(self.trail.pop())
+            else:
+                self.detail = None
         elif k in (curses.KEY_DOWN, ord("j")):
             self.dscroll += 1
         elif k in (curses.KEY_UP, ord("k")):

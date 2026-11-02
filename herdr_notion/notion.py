@@ -258,6 +258,33 @@ def relative_time(iso, now=None):
     return "now"
 
 
+def checklist_progress(lines):
+    """(done, total) of the to-do lines ([x] and [ ]) in a flattened body, or None when there are none."""
+    marks = [l.lstrip()[:3] for l in lines if l.lstrip().startswith(("[x]", "[ ]"))]
+    return (marks.count("[x]"), len(marks)) if marks else None
+
+
+def page_relations(page):
+    """[(property, page id, title)] for every linked page in the page's relation properties."""
+    out = []
+    for name, p in page.get("properties", {}).items():
+        if p.get("type") == "relation":
+            out += [(name, x.get("id", ""), x.get("title") or "") for x in p.get("relation") or []]
+    return out
+
+
+def relations_line(page, body=None):
+    """'☑ 2/3 subtasks · ↗ 2 related' for the preview, or '' when there is neither."""
+    parts = []
+    prog = checklist_progress(body or [])
+    if prog:
+        parts.append("%s %d/%d subtasks" % ("☑" if prog[0] == prog[1] else "☐", prog[0], prog[1]))
+    rel = page_relations(page)
+    if rel:
+        parts.append("↗ %d related (L)" % len(rel))
+    return " · ".join(parts)
+
+
 def parse_time(iso):
     """Aware datetime for an ISO-8601 timestamp or date, or None."""
     from datetime import datetime, timezone

@@ -236,3 +236,56 @@ class Board(unittest.TestCase):
         app.draw_board()
         self.assertTrue(scr.has("Done 1"))
         self.assertFalse(scr.has("To do 2"))
+
+
+class Relations(unittest.TestCase):
+    def linked(self, **kw):
+        app, scr = fresh(**kw)
+        a, b = app.pages[0], app.pages[1]
+        a["properties"]["Related"] = {"type": "relation", "relation": [{"id": b["id"], "title": nt.page_title(b)}]}
+        return app, scr, a, b
+
+    def test_checklist_progress_counts_todo_lines(self):
+        self.assertEqual(nt.checklist_progress(["[x] a", "  [ ] b", "[ ] c", "text"]), (1, 3))
+        self.assertIsNone(nt.checklist_progress(["text"]))
+
+    def test_summary_names_subtasks_and_related_pages(self):
+        _, _, a, _ = self.linked()
+        self.assertEqual(nt.relations_line(a, ["[x] a", "[ ] b"]), "☐ 1/2 subtasks · ↗ 1 related (L)")
+        self.assertEqual(nt.relations_line(a, ["[x] a"]), "☑ 1/1 subtasks · ↗ 1 related (L)")
+        self.assertEqual(nt.relations_line({"properties": {}}, ["text"]), "")
+
+    def test_the_preview_shows_the_summary(self):
+        app, scr, a, _ = self.linked(h=20, w=150)
+        app.sel = 0
+        app.cache[a["id"]] = ["[x] done one", "[ ] open one"]
+        app.draw_list()
+        self.assertTrue(scr.has("1/2 subtasks"))
+        self.assertTrue(scr.has("1 related"))
+
+    def test_L_opens_the_linked_page_and_left_comes_back(self):
+        app, _, a, b = self.linked()
+        app.sel = 0
+        opened = []
+        app.open_page = lambda page: (opened.append(page["id"]), setattr(app, "detail", {"page": page, "body": ""}))
+        app.popup = lambda title, items, start=0: 0
+        app.list_key(ord("L"))
+        self.assertEqual(opened, [b["id"]])
+        app.detail["page"] = b
+        app.trail = [a]
+        app.detail_key(curses.KEY_LEFT)
+        self.assertEqual(opened, [b["id"], a["id"]])
+        app.detail = None
+        app.trail = []
+
+    def test_L_without_links_says_so(self):
+        app, _ = fresh()
+        app.list_key(ord("L"))
+        self.assertIn("no linked pages", app.msg)
+
+    def test_the_detail_view_shows_the_summary(self):
+        app, scr, a, _ = self.linked(h=30, w=100)
+        app.detail = {"page": a, "lines": [], "body": "[x] one\n[ ] two"}
+        app.dscroll = 0
+        app.draw_detail()
+        self.assertTrue(scr.has("1/2 subtasks"))
