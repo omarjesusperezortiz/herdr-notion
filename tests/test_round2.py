@@ -289,3 +289,59 @@ class Relations(unittest.TestCase):
         app.dscroll = 0
         app.draw_detail()
         self.assertTrue(scr.has("1/2 subtasks"))
+
+
+import os
+import tempfile
+
+from herdr_notion import digest
+from tests.support import CONFIG, FakeClient
+
+
+class Digest(unittest.TestCase):
+    def setup(self):
+        pages = copy.deepcopy(PAGES)
+        return pages, FakeClient(pages), os.path.join(tempfile.mkdtemp(), "digest.json")
+
+    def cfg(self):
+        c = copy.deepcopy(CONFIG)
+        c["filters"] = [{"name": "Mine"}, {"name": "All"}]
+        return c
+
+    def test_the_first_run_only_remembers(self):
+        pages, client, path = self.setup()
+        lines = digest.run(client, self.cfg(), path=path)
+        self.assertIn("First digest: remembering 5 pages", lines[0])
+        self.assertTrue(os.path.exists(path))
+
+    def test_changes_are_status_new_and_edited(self):
+        pages, client, path = self.setup()
+        digest.run(client, self.cfg(), path=path)
+        pages[0]["properties"]["Status"]["status"]["name"] = "In progress"
+        pages[1]["last_edited_time"] = "2027-01-01T00:00:00Z"
+        pages.append(page(9, "Newcomer", "To do"))
+        lines = digest.run(client, self.cfg(), path=path)
+        text = "\n".join(lines)
+        self.assertIn("3 changes in Mine", text)
+        self.assertIn("To do → In progress", text)
+        self.assertIn("Newcomer", text)
+        self.assertIn("edited", text)
+        self.assertLess(text.index("To do → In progress"), text.index("Newcomer"))  # status changes first
+
+    def test_a_second_run_with_nothing_new_says_so(self):
+        pages, client, path = self.setup()
+        digest.run(client, self.cfg(), path=path)
+        self.assertIn("Nothing changed in Mine", digest.run(client, self.cfg(), path=path)[0])
+
+    def test_peek_leaves_the_snapshot_alone(self):
+        pages, client, path = self.setup()
+        digest.run(client, self.cfg(), path=path)
+        pages[0]["properties"]["Status"]["status"]["name"] = "Done"
+        self.assertIn("1 change", digest.run(client, self.cfg(), peek=True, path=path)[0])
+        self.assertIn("1 change", digest.run(client, self.cfg(), path=path)[0])  # still reported: peek did not save
+
+    def test_tab_by_name_and_unknown_tab(self):
+        pages, client, path = self.setup()
+        self.assertIn("pages in All", digest.run(client, self.cfg(), tab="all", path=path)[0])
+        with self.assertRaises(digest.cfgmod.ConfigError):
+            digest.run(client, self.cfg(), tab="nope", path=path)

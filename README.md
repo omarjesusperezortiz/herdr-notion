@@ -159,6 +159,13 @@ type and a working directory, creates a tab (`herdr tab create`), starts the
 agent with `herdr pane run`, waits until it is detected and idle, then sends
 the prompt. If it never becomes ready, nothing is sent.
 
+## Digest
+
+`python3 -m herdr_notion digest` (run it in the checkout) prints what changed in a tab since the last time you ran it: status
+changes, new pages and edits, one line each. The first run only remembers the pages. `--tab Sprint` picks another tab
+(default: the first), `--peek` reports without moving the "last seen" point. It reads the same sign-in as the app and writes
+nothing to Notion; the last-seen state is a small `digest.json` next to your config.
+
 ## Tested
 
 - Unit tests (`python3 -m unittest discover -s tests -t .`): block flattening,

@@ -37,5 +37,5 @@ Each is done only when its tests pass. Whatever is tested only against fakes is 
   that id is matched to the row (working, idle). A finished agent offers to set the status.
 - [x] **R3 Board view.** `B` opens columns by status. h/l column, j/k card, H/L move the card (confirm), Enter opens.
 - [x] **R4 Subtasks and relations in the preview.** A summary line (to-do progress, linked pages) in the preview and the page; `L` opens a linked page, `←` comes back. Sub-items are counted from the page's to-do lines.
-- [ ] **R5 Digest.** `herdr-notion digest` prints what changed since the last look, from the seen file.
+- [x] **R5 Digest.** `python3 -m herdr_notion digest [--tab NAME] [--peek]` prints status changes, new pages and edits since the last run. It keeps its own `digest.json` (the seen file only has edit times, so it cannot tell a status change).
 - [ ] **R6 Branch from a ticket.** `b` proposes a branch name, asks, creates it and starts an agent there.
