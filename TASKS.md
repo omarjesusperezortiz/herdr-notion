@@ -43,3 +43,17 @@ Each is done only when its tests pass. Whatever is tested only against fakes is 
 Tested only against fakes: agent matching (herdr is faked), the board and quick-filter screens (fake terminal), moving a card
 and starting a branch's agent (fake client and fake herdr). Tested for real: the git worktree creation (a temporary
 repository), the digest command's read path against the real database (read-only, `--peek`).
+
+# Round 3: the mouse proposals
+
+- [x] **M1 Popups take the mouse** (click picks, wheel moves, click outside cancels; the help box scrolls with the wheel).
+- [x] **M2 Footer hints are buttons** (list, page, board; a hint naming several keys is not).
+- [x] **M3 Click a cell** (status word: status popup; other cells: that property's editor).
+- [x] **M4 Board drag** (press a card, release over another column: confirm, then the status is set).
+- [x] **M5 Right-click menu** (row or card; the box opens at the pointer).
+- [x] **M6 Column headers sort** (second click reverses; ▼ ▲). The EDITED column is two characters wider for the arrow.
+- [x] **M7 Click the bar to mark**, Shift or Alt click for a range. Many terminals keep Shift for text selection, so Alt may be the one that works.
+- [x] **M8 A click focuses the pane** (done earlier).
+
+Checked for real: the app reads real X10 mouse bytes sent to a pty (click, bar, header, right-click menu, footer hint, status popup,
+board drag with the confirm declined). Not verified: that herdr forwards mouse events to a plugin pane; whether Shift/Alt arrive in your terminal.

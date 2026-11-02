@@ -26,7 +26,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -51,6 +51,9 @@ class App:
         self.collapsed = set()  # status names whose group is folded (only while grouped)
         self.header_key = {}  # group header text -> status name, filled by build_display
         self.hdr = None  # status name of the group header the cursor is on (None: on a page)
+        self.sort_rev = False  # a second click on a column header reverses the order
+        self.mark_anchor = None  # id of the page last marked with a click (a Shift/Alt click extends from it)
+        self.drag = None  # (column, card) a board drag started on
         self.seen = self.load_seen()  # page id -> last edit time already looked at (for the unread dot)
         self.last_refresh = time.time()
         self.sel_id, self.sel_changed = None, time.time()
@@ -107,58 +110,108 @@ class App:
     # ------------------------------------------------------------ mouse (opt-in)
     WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0x80000)
     WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0x200000)  # ncurses 6 reports the wheel down as button 5
+    RIGHT_CLICK = getattr(curses, "BUTTON3_PRESSED", 0x2000)
+    RELEASE = getattr(curses, "BUTTON1_RELEASED", 1)
+    MODIFIERS = getattr(curses, "BUTTON_SHIFT", 0x2000000) | getattr(curses, "BUTTON_ALT", 0x4000000)  # held while clicking
 
     def set_mouse(self, on):
         """Ask the terminal for clicks and the wheel (or stop asking). While on, dragging selects nothing and
         Cmd-click opens no links; Option (macOS Terminal, iTerm) or Shift (most others) gives that back."""
         self.mouse_on = bool(on)
         try:
-            curses.mousemask(curses.BUTTON1_PRESSED | self.WHEEL_UP | self.WHEEL_DOWN if on else 0)
+            curses.mousemask(curses.BUTTON1_PRESSED | self.RELEASE | self.RIGHT_CLICK | self.WHEEL_UP | self.WHEEL_DOWN
+                             | self.MODIFIERS if on else 0)
             curses.mouseinterval(0)
         except curses.error:
             self.mouse_on = False
 
     def toggle_mouse(self):
         self.set_mouse(not self.mouse_on)
-        self.msg = ("mouse on: click a row, tab or status, wheel scrolls · hold Option or Shift to select text"
+        self.msg = ("mouse on: click rows, cells, hints; right click for a menu · hold Option or Shift to select text"
                     if self.mouse_on else "mouse off")
 
-    def on_mouse(self):
-        """A mouse event arrived: the wheel scrolls the pane under the pointer, a click selects, a second click opens."""
+    def read_mouse(self):
+        """(x, y, button state) of the pending mouse event, or None."""
         try:
-            _, x, y, _, bstate = curses.getmouse()
+            _, x, y, _, b = curses.getmouse()
         except curses.error:
-            return True
-        w = self.scr.getmaxyx()[1]
+            return None
+        return x, y, b
+
+    HINT_KEYS = {"⏎": 10, "Tab": 9, "Esc": 27, "Space": ord(" "), "→": curses.KEY_RIGHT, "←": curses.KEY_LEFT}
+
+    @classmethod
+    def hint_key(cls, text):
+        """The key a footer hint stands for, or None for a hint that names several keys (↑↓/PgUp, j k)."""
+        return cls.HINT_KEYS.get(text, ord(text) if len(text) == 1 else None)
+
+    def send_key(self, k):
+        """Do what pressing `k` would do in the screen that is showing (a click on a footer hint or a menu item)."""
         if self.detail:
-            if bstate & self.WHEEL_UP:
-                self.dscroll = max(0, self.dscroll - 3)
-            elif bstate & self.WHEEL_DOWN:
-                self.dscroll += 3
+            return self.detail_key(k)
+        if self.board:
+            return self.board_key(k)
+        return self.list_key(k)
+
+    def on_mouse(self):
+        """A mouse event arrived. The wheel scrolls the pane under the pointer; a left click acts on what is under
+        it (tab, status chip, group header, footer hint, column header, a cell, the mark bar, a row; a second click
+        on a row opens it); a click in a pane focuses it; a right click opens a menu for the row."""
+        ev = self.read_mouse()
+        if not ev:
             return True
-        wheel = -3 if bstate & self.WHEEL_UP else 3 if bstate & self.WHEEL_DOWN else 0
+        x, y, b = ev
+        w, h = self.scr.getmaxyx()[1], self.scr.getmaxyx()[0]
+        wheel = -3 if b & self.WHEEL_UP else 3 if b & self.WHEEL_DOWN else 0
+        if self.detail:
+            if wheel:
+                self.dscroll = max(0, self.dscroll + wheel)
+            elif b & curses.BUTTON1_PRESSED:
+                hit = self.hit_at(x, y)
+                if hit and hit[3] == "key" and self.hint_key(hit[4]) is not None:
+                    return self.send_key(self.hint_key(hit[4]))
+            return True
+        if self.board:
+            return self.board_mouse(x, y, b, wheel)
         if wheel:
             tw = max(70, int(w * 0.56))
             if self.wide() and x > tw:
                 self.pscroll = max(0, self.pscroll + wheel)
             elif self.pages:
-                self.sel = max(0, min(len(self.pages) - 1, self.sel + wheel))
+                self.sel, self.hdr = max(0, min(len(self.pages) - 1, self.sel + wheel)), None
             return True
-        if not bstate & curses.BUTTON1_PRESSED:
+        right = bool(b & self.RIGHT_CLICK)
+        if not (b & curses.BUTTON1_PRESSED or right):
             return True
-        hit = next((h for h in self.hits if h[0] == y and h[1] <= x < h[2]), None)
+        hit = self.hit_at(x, y)
         if not hit:
-            h_ = self.scr.getmaxyx()[0]
-            if self.wide() and self.pages and 3 <= y < h_ - 3:  # a click lands in a pane: that pane gets the focus
+            if not right and self.wide() and self.pages and 3 <= y < h - 3:  # a click lands in a pane: it gets the focus
                 self.focus = "preview" if x > max(70, int(w * 0.56)) and not self.hdr else "list"
             return True
         action, arg = hit[3], hit[4]
+        if right:
+            if action in ("row", "cell", "mark") and (arg if action == "row" else arg if action == "mark" else arg[0]) < len(self.pages):
+                i = arg if action in ("row", "mark") else arg[0]
+                self.sel, self.hdr, self.focus = i, None, "list"
+                self.context_menu(y, x)
+            return True
         if action == "tab":
             self.guard(self.pick_filter, arg)
         elif action == "status":
             self.guard(self.set_status_filter, arg)
         elif action == "group":
             self.toggle_group(arg)
+        elif action == "key":
+            code = self.hint_key(arg)
+            if code is not None:
+                return self.send_key(code)
+        elif action == "sort":
+            self.click_sort(arg)
+        elif action == "mark" and arg < len(self.pages):
+            self.click_mark(arg, bool(b & self.MODIFIERS))
+        elif action == "cell" and arg[0] < len(self.pages):
+            self.sel, self.hdr, self.focus = arg[0], None, "list"
+            self.guard(self.edit_cell, arg[1])
         elif action == "row" and arg < len(self.pages):
             again = self.last_click == (y, self.pages[arg]["id"]) and time.time() - self.last_click_at < 0.5
             self.sel, self.focus, self.hdr = arg, "list", None
@@ -166,6 +219,56 @@ class App:
             if again:
                 self.guard(self.open_page, self.pages[arg])
         return True
+
+    def hit_at(self, x, y):
+        return next((h for h in self.hits if h[0] == y and h[1] <= x < h[2]), None)
+
+    SORT_COLUMNS = {"title": 1, "status": 2, "edited": 0}  # header click -> index into SORTS
+
+    def click_sort(self, col):
+        """A click on a column header: sort by it; a second click on the same one reverses the order."""
+        idx = self.SORT_COLUMNS[col]
+        if self.sort_mode == idx:
+            self.sort_rev = not self.sort_rev
+        else:
+            self.sort_mode, self.sort_rev = idx, False
+        self.apply_sort()
+        self.msg = "sorted by %s%s" % (self.SORTS[idx][1], " (reversed)" if self.sort_rev else "")
+
+    def sort_arrow(self, col):
+        """▼ or ▲ for the column the list is sorted by, '' for the others."""
+        if self.sort_mode != self.SORT_COLUMNS[col]:
+            return ""
+        newest_first = (col == "edited") != self.sort_rev
+        return " ▼" if newest_first else " ▲"
+
+    def click_mark(self, i, extend=False):
+        """A click on the bar of a row marks or unmarks it; with Shift or Alt held it marks every row from the last one clicked."""
+        pid = self.pages[i]["id"]
+        anchor = next((n for n, p in enumerate(self.pages) if p["id"] == self.mark_anchor), None)
+        if extend and anchor is not None:
+            lo, hi = sorted((anchor, i))
+            self.marked |= {p["id"] for p in self.pages[lo:hi + 1]}
+        else:
+            self.marked ^= {pid}
+        self.mark_anchor = pid
+        self.msg = "%d marked: s sets their status, Esc clears" % len(self.marked) if self.marked else "no pages marked"
+
+    def edit_cell(self, prop):
+        """A click on a cell: the status popup for the status column, the editor of that property for the others."""
+        if prop == self.cfg["status_property"]:
+            self.change_status()
+        else:
+            self.edit_property(only=prop)
+
+    CONTEXT_MENU = [("Open", "⏎", 10), ("Change status", "s", ord("s")), ("Delegate to an agent", "d", ord("d")), ("Edit a property", "e", ord("e")),
+            ("Mark", "x", ord("x")), ("Copy the link", "y", ord("y")), ("Open in browser", "o", ord("o")), ("Branch for it", "w", ord("w"))]
+
+    def context_menu(self, y, x):
+        """Right click: a small menu of the usual actions for the row under the pointer, each with its key."""
+        i = self.popup("", ["%-22s %s" % (name, key) for name, key, _ in self.CONTEXT_MENU], at=(y, x))
+        if i is not None:
+            self.send_key(self.CONTEXT_MENU[i][2])
 
     def busy(self, text):
         self.scr.erase()
@@ -421,7 +524,7 @@ class App:
         """Order the loaded pages (and group them by status) while keeping the selection on the same page."""
         sid = self.pages[self.sel]["id"] if self.pages and self.sel < len(self.pages) else None
         mode = self.SORTS[self.sort_mode][0]
-        if self.on_view_tab() and not self.sort_mode and not self.group:  # keep the order the view has in Notion
+        if self.on_view_tab() and not self.sort_mode and not self.sort_rev and not self.group:  # keep the order the view has in Notion
             self.pages = [p for p in self.all if self.matches(p)]
             self.sel = next((i for i, p in enumerate(self.pages) if p["id"] == sid), 0) if sid else 0
             return
@@ -431,6 +534,8 @@ class App:
             self.all.sort(key=self.status_rank)
         else:
             self.all.sort(key=lambda p: p.get("last_edited_time") or "", reverse=True)
+        if self.sort_rev:
+            self.all.reverse()
         if self.group:  # stable: keeps the chosen order inside each group
             self.all.sort(key=self.status_rank)
         self.pages = [p for p in self.all if self.matches(p)]
@@ -861,12 +966,19 @@ class App:
         # They are dropped from the right until the title has at least 20 columns.
         extra = [c for c in self.cfg["columns"] if c != self.cfg["status_property"]]
         cols = ([] if self.compact else [("STATUS", 14)]) + [(c.upper(), min(14, max(len(c), 6))) for c in extra] \
-            + ([("AGENT", 12)] if any(p["id"] in self.delegations or p["id"] in self.found for p in self.pages) else []) + [("EDITED", 6)]
+            + ([("AGENT", 12)] if any(p["id"] in self.delegations or p["id"] in self.found for p in self.pages) else []) + [("EDITED", 8)]
         while cols and tw_total - 4 - sum(cw + 2 for _, cw in cols) < 20:
             cols.pop()
         tw = max(10, tw_total - 4 - sum(cw + 2 for _, cw in cols))
-        head = "  " + "TITLE".ljust(tw) + "".join("  " + n.ljust(cw) for n, cw in cols)
-        self.scr.addnstr(2, 0, head, tw_total - 1, curses.A_DIM | curses.A_BOLD)
+        arrow = {"TITLE": "title", "STATUS": "status", "EDITED": "edited"}  # header -> sort column; clicking sorts
+        labels = [("TITLE", "TITLE" + self.sort_arrow("title"), tw)] + [(n, n + (self.sort_arrow(arrow[n]) if n in arrow else ""), cw) for n, cw in cols]
+        head = "  " + "".join(lab.ljust(wd) + "  " for _, lab, wd in labels)
+        self.scr.addnstr(2, 0, head.rstrip(), tw_total - 1, curses.A_DIM | curses.A_BOLD)
+        hx = 2
+        for n, lab, wd in labels:
+            if n in arrow:
+                self.hits.append((2, hx, hx + wd, "sort", arrow[n]))
+            hx += wd + 2
         peek = 4 if (h >= 20 and not wide) else 0  # the selected page in full, since titles get clipped in the table
         rows = h - 6 - peek
         disp = self.build_display()
@@ -895,7 +1007,7 @@ class App:
             kind_ = self.status_kind(pg)
             bar = self.kind_attr(kind_) if not (on and kind_ == "todo") else 0
             self.scr.addnstr(y, 0, "▌", 1, (curses.A_BOLD if on else base) | bar)
-            self.hits.append((y, 0, tw_total, "row", i))
+            self.hits.append((y, 0, 2, "mark", i))
             if pg["id"] in self.marked:
                 self.scr.addnstr(y, 1, "+", 1, base | curses.A_BOLD)
             elif self.unread(pg):
@@ -907,6 +1019,7 @@ class App:
                 if n == "STATUS":
                     mark, text, attr = self.status_cell(pg)
                     self.scr.addstr(y, x, nt.clip("%s %s" % (mark, text), cw), base | attr)
+                    self.hits.append((y, x, x + cw, "cell", (i, self.cfg["status_property"])))
                 elif n == "EDITED":
                     self.scr.addnstr(y, x, nt.relative_time(pg.get("last_edited_time")), cw, base | curses.A_DIM)
                 elif n == "AGENT":
@@ -918,7 +1031,9 @@ class App:
                     text = nt.prop_text(pg["properties"].get(key))
                     hot = self.cp(5) | curses.A_BOLD if text.lower() in self.URGENT else 0
                     self.scr.addstr(y, x, nt.clip(text, cw), base | hot)
+                    self.hits.append((y, x, x + cw, "cell", (i, key)))
                 x += cw
+            self.hits.append((y, 0, tw_total, "row", i))
         if not self.pages and self.job:
             for r in range(min(rows, 8)):  # skeleton rows while the first page loads
                 bar = "░" * (14 + (r * 7) % 17)
@@ -985,6 +1100,7 @@ class App:
         h, w = self.scr.getmaxyx()
         self.scr.erase()
         self.hits = []
+        self.board_spans = []  # (first x, last x + 1, column index) of each column drawn: where a dragged card can land
         self.draw_tabs(w)
         cols = self.board_columns()
         if not cols:
@@ -1003,6 +1119,7 @@ class App:
                 ci = self.bfirst + v
                 name, idxs = cols[ci]
                 x0 = v * cw
+                self.board_spans.append((x0, x0 + cw, ci))
                 kind = self.kind_of(name)
                 head = "%s %s %d" % (self.MARK[kind], name, len(idxs))
                 self.scr.addnstr(1, x0 + 1, nt.clip(head, cw - 2), cw - 2,
@@ -1017,6 +1134,7 @@ class App:
                     base = curses.A_REVERSE if on else 0
                     for dy in range(self.CARD_ROWS - 1):
                         self.scr.addnstr(y + dy, x0, " " * (cw - 2), cw - 2, base)
+                        self.hits.append((y + dy, x0, x0 + cw - 1, "card", (ci, top + r)))
                     lines = textwrap.wrap(nt.clean(nt.page_title(pg)), max(cw - 4, 8))[:2]
                     for dy, line in enumerate(lines):
                         self.scr.addnstr(y + dy, x0 + 1, line, cw - 3, base | (curses.A_BOLD if on else 0))
@@ -1035,7 +1153,7 @@ class App:
         cols = self.board_columns()
         self.msg = ""
         if k == curses.KEY_MOUSE:
-            return True
+            return self.on_mouse()
         if k in (ord("B"), ord("q"), 27):
             self.board = False
             return True
@@ -1067,6 +1185,50 @@ class App:
                 self.common_key(k)
         return True
 
+    def board_mouse(self, x, y, b, wheel):
+        """The mouse on the board: click a card to select it (twice opens it), drag it onto another column to change
+        its status, right click for the menu, wheel moves between cards."""
+        cols = self.board_columns()
+        if wheel:
+            if cols:
+                self.brow = max(0, min(len(cols[self.bcol][1]) - 1, self.brow + (1 if wheel > 0 else -1)))
+            return True
+        if b & self.RELEASE and not b & curses.BUTTON1_PRESSED:
+            start, self.drag = self.drag, None
+            target = next((ci for x0, x1, ci in getattr(self, "board_spans", []) if x0 <= x < x1), None)
+            if start and target is not None and target != start[0] and 3 <= y < self.scr.getmaxyx()[0] - 3:
+                self.bcol, self.brow = start
+                self.guard(self.board_move, cols, target - start[0])
+            return True
+        right = bool(b & self.RIGHT_CLICK)
+        if not (b & curses.BUTTON1_PRESSED or right):
+            return True
+        hit = self.hit_at(x, y)
+        if not hit:
+            return True
+        action, arg = hit[3], hit[4]
+        if action == "card":
+            self.bcol, self.brow = arg
+            i = self.board_page(cols)
+            if i is None:
+                return True
+            self.sel = i
+            if right:
+                self.context_menu(y, x)
+                return True
+            again = self.last_click == (y, self.pages[i]["id"]) and time.time() - self.last_click_at < 0.5
+            self.last_click, self.last_click_at = (y, self.pages[i]["id"]), time.time()
+            self.drag = None if again else arg
+            if again:
+                self.guard(self.open_page, self.pages[i])
+        elif action == "tab":
+            self.guard(self.pick_filter, arg)
+        elif action == "key":
+            code = self.hint_key(arg)
+            if code is not None:
+                return self.send_key(code)
+        return True
+
     def board_move(self, cols, step):
         """H / L: set the status of the selected card to the one of the neighbouring column, after a confirm."""
         i = self.board_page(cols)
@@ -1094,6 +1256,7 @@ class App:
     def draw_detail(self):
         h, w = self.scr.getmaxyx()
         self.scr.erase()
+        self.hits = []
         page = self.detail["page"]
         mark, stext, sattr = self.status_cell(page)
         right = "%s %s" % (mark, stext)
@@ -1145,23 +1308,28 @@ class App:
         h, w = self.scr.getmaxyx()
         ctx = self.cfg["filters"][self.fidx]["name"] if self.cfg else ""
         # keep the filter name only when the hints still have room
-        text = nt.fit_hints(hints, w - 2 - (len(ctx) + 3 if ctx else 0))
-        if len(text) < len(nt.fit_hints(hints, w - 2)):
+        parts = nt.fit_hint_parts(hints, w - 2 - (len(ctx) + 3 if ctx else 0))
+        if len("  ".join(t for _, t in parts)) < len(nt.fit_hints(hints, w - 2)):
             ctx = ""
-            text = nt.fit_hints(hints, w - 2)
+            parts = nt.fit_hint_parts(hints, w - 2)
         note = "%s %s" % (self.spin(), self.job["label"]) if self.visible_job() else self.msg
         if note:
             self.scr.addnstr(h - 2, 1, note, w - 2, curses.A_BOLD if not self.job else curses.A_DIM)
             hint_row = h - 1
         else:
             hint_row = h - 2
-        self.scr.addnstr(hint_row, 1, text, w - 2, curses.A_DIM)
+        x = 1
+        for i, text in parts:  # each hint is a button: a click does what its key does
+            self.scr.addnstr(hint_row, x, text, w - 1 - x, curses.A_DIM)
+            self.hits.append((hint_row, x, x + len(text), "key", hints[i][0]))
+            x += len(text) + 2
         if ctx:
             self.scr.addnstr(hint_row, w - len(ctx) - 2, ctx, len(ctx), curses.A_DIM | curses.A_BOLD)
 
     # ------------------------------------------------------------ popups
-    def popup(self, title, items, start=0):
-        """Pick one of `items`; returns an index or None. 1-9 pick directly."""
+    def popup(self, title, items, start=0, at=None):
+        """Pick one of `items`; returns an index or None. 1-9 pick directly. With the mouse on, a click picks an item,
+        the wheel moves, a click outside cancels. `at` = (row, col) puts the box at the pointer instead of the middle."""
         sel = start
         while True:
             h, w = self.scr.getmaxyx()
@@ -1169,10 +1337,13 @@ class App:
             bw = min(w - 2, max([nt.cell_width(title) + 6] + [nt.cell_width(i) + 7 for i in items]))
             bh = min(h - 2, len(items) + 2)
             y0, x0 = (h - bh) // 2, (w - bw) // 2
+            if at:
+                y0, x0 = max(0, min(at[0], h - bh)), max(0, min(at[1], w - bw))
             win = curses.newwin(bh, bw, y0, x0)
             win.keypad(True)
             win.box()
-            win.addnstr(0, 2, " %s " % title, bw - 4, curses.A_BOLD)
+            if title:
+                win.addnstr(0, 2, " %s " % title, bw - 4, curses.A_BOLD)
             first = max(0, min(sel - (bh - 3), len(items) - (bh - 2)))
             for r, it in enumerate(items[first:first + bh - 2]):
                 i = first + r
@@ -1181,6 +1352,22 @@ class App:
                 win.addstr(1 + r, 1, row, curses.A_REVERSE if i == sel else 0)
             win.refresh()
             k = win.getch()  # not self.scr.getch(): that would repaint the background over the popup
+            if k == curses.KEY_MOUSE:
+                ev = self.read_mouse()
+                if not ev:
+                    continue
+                mx, my, b = ev
+                inside = y0 <= my < y0 + bh and x0 <= mx < x0 + bw
+                if b & self.WHEEL_UP:
+                    sel = max(sel - 1, 0)
+                elif b & self.WHEEL_DOWN:
+                    sel = min(sel + 1, len(items) - 1)
+                elif b & (curses.BUTTON1_PRESSED | self.RIGHT_CLICK):
+                    if inside and y0 < my < y0 + bh - 1:
+                        return first + (my - y0 - 1)
+                    if not inside:
+                        return None
+                continue
             if k in (27, ord("q")):
                 return None
             if k in (curses.KEY_DOWN, ord("j")):
@@ -1339,8 +1526,9 @@ class App:
     # ------------------------------------------------------------ edit, comment, create, switch database
     EDITABLE = ("select", "status", "number", "rich_text", "url", "email", "phone_number", "checkbox")
 
-    def edit_property(self):
-        """e: change one property of the selected page (asks to confirm; the write goes through Notion's MCP)."""
+    def edit_property(self, only=None):
+        """e: change one property of the selected page (asks to confirm; the write goes through Notion's MCP).
+        `only` names the property to change (a click on its cell), skipping the choice of property."""
         page = self.current()
         if not page:
             return
@@ -1349,7 +1537,10 @@ class App:
         if not names:
             self.msg = "no editable properties"
             return
-        i = self.popup("Edit property", ["%s (%s)" % (n, schema["properties"][n]["type"]) for n in names])
+        if only is not None and only not in names:
+            self.msg = "%s cannot be edited here" % only
+            return
+        i = names.index(only) if only is not None else self.popup("Edit property", ["%s (%s)" % (n, schema["properties"][n]["type"]) for n in names])
         if i is None:
             return
         name, kind = names[i], schema["properties"][names[i]]["type"]
@@ -1381,7 +1572,7 @@ class App:
         if not self.confirm("Set %s to '%s'?" % (name, nt.clip(shown, 40))):
             self.msg = "cancelled"
             return
-        self.busy("Updating…")
+        self.note("Updating…")
         updated = self.client.set_property(page["id"], name, value)
         self.replace_page(updated)
         if self.detail:
@@ -2452,6 +2643,18 @@ class App:
                 win.addnstr(bh - 1, bw - len(cue) - 2, cue, len(cue), curses.A_DIM)
             win.refresh()
             k = win.getch()
+            if k == curses.KEY_MOUSE:
+                ev = self.read_mouse()
+                if ev:
+                    mx, my, b = ev
+                    y0, x0 = (h - bh) // 2, (w - bw) // 2
+                    if b & self.WHEEL_UP:
+                        top = max(0, top - 3)
+                    elif b & self.WHEEL_DOWN:
+                        top = min(max(0, len(rows) - room), top + 3)
+                    elif b & curses.BUTTON1_PRESSED and not (y0 <= my < y0 + bh and x0 <= mx < x0 + bw):
+                        return
+                continue
             top = self.help_scroll(k, top, len(rows), room)
             if top is None:
                 return
@@ -2691,7 +2894,7 @@ class App:
         elif k == ord("D"):
             self.guard(self.switch_database)
         elif k == ord("O"):
-            self.sort_mode = (self.sort_mode + 1) % len(self.SORTS)
+            self.sort_mode, self.sort_rev = (self.sort_mode + 1) % len(self.SORTS), False
             self.apply_sort()
             self.msg = "sorted by %s" % self.SORTS[self.sort_mode][1]
         elif k == ord("g"):  # one key, three states: list, groups open, groups folded

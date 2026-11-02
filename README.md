@@ -121,7 +121,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `z` | compact rows: a colored bar replaces the status word (`NO_COLOR=1` turns colors off) |
 | `x` | mark a page (and move down); `s` then sets one status on every marked page, `Esc` clears the marks |
 | `>` | move the page to the next status (asks to confirm the first time only) |
-| `M` | mouse on/off: click a row (twice opens it), a tab or a status chip; a click in the preview gives it the focus (a click in the list takes it back); the wheel scrolls the pane under the pointer |
+| `M` | mouse on/off (see below) |
 | `V` | open one of the database's Notion views as a tab: its filters, its order, real paging |
 | `B` | Board: a column per status. `h` `l` change column, `j` `k` card, `H` `L` move the card to the next status (asks first), `⏎` opens it, `B` or `Esc` goes back to the list |
 | `L` | Open a page linked from this one (a relation property); `←` comes back. The preview and the page show `☑ 2/3 subtasks · ↗ 2 related` when there are to-dos or links |
@@ -159,6 +159,23 @@ Running agents come from `herdr agent list`; the prompt is delivered with
 type and a working directory, creates a tab (`herdr tab create`), starts the
 agent with `herdr pane run`, waits until it is detected and idle, then sends
 the prompt. If it never becomes ready, nothing is sent.
+
+### Mouse
+
+Off by default: `mouse = true` in the config, or `M` while running. With it on, hold Option or Shift to select text.
+
+| Click | What it does |
+|---|---|
+| a row | selects it; a second click opens it; a click in the preview gives it the focus, a click in the list takes it back |
+| the status word or another cell | opens the status popup (or the editor of that property) for that row |
+| the colored bar of a row | marks it; with Shift or Alt held it marks every row from the last one clicked (many terminals keep Shift for themselves) |
+| `TITLE`, `STATUS`, `EDITED` | sorts by it; a second click reverses it (▼ ▲ shows the order) |
+| a tab, a status chip, a group header | switches, filters, folds |
+| a hint in the footer | does what its key does (`s status`, `B board`, `? more`) |
+| right click on a row or card | a menu of the usual actions, each with its key |
+| inside any popup | click an item to pick it, the wheel moves, a click outside cancels |
+| a board card | selects it (twice opens it); drag it onto another column to change its status, after a confirm |
+| the wheel | scrolls the pane under the pointer |
 
 ## Digest
 
