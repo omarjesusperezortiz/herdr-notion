@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/social.png" alt="herdr-notion: Notion, in your terminal pane. The real list, with status glyphs, priorities and a preview pane." width="760"></p>
+
 # herdr-notion
 
 A Notion database in a [herdr](https://herdr.dev) pane, from the keyboard. Browse **one** database through named filters, read a
