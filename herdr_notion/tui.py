@@ -50,6 +50,7 @@ class App:
         self.board, self.bcol, self.brow, self.bfirst = False, 0, 0, 0  # board view: on, column, card, first column shown
         self.collapsed = set()  # status names whose group is folded (only while grouped)
         self.header_key = {}  # group header text -> status name, filled by build_display
+        self.hdr = None  # status name of the group header the cursor is on (None: on a page)
         self.seen = self.load_seen()  # page id -> last edit time already looked at (for the unread dot)
         self.last_refresh = time.time()
         self.sel_id, self.sel_changed = None, time.time()
@@ -157,7 +158,7 @@ class App:
             self.toggle_group(arg)
         elif action == "row" and arg < len(self.pages):
             again = self.last_click == (y, self.pages[arg]["id"]) and time.time() - self.last_click_at < 0.5
-            self.sel, self.focus = arg, "list"
+            self.sel, self.focus, self.hdr = arg, "list", None
             self.last_click, self.last_click_at = (y, self.pages[arg]["id"]), time.time()
             if again:
                 self.guard(self.open_page, self.pages[arg])
@@ -334,6 +335,8 @@ class App:
     def current(self):
         if self.detail:
             return self.detail["page"]
+        if self.hdr:  # the cursor is on a group header: no page is selected
+            return None
         return self.pages[self.sel] if self.pages else None
 
     # ------------------------------------------------------------ sorting, grouping, unread
@@ -438,6 +441,8 @@ class App:
             counts[k] = counts.get(k, 0) + 1
         out, last = [], None
         self.header_key = {}
+        if not self.group:
+            self.hdr = None
         for i, p in enumerate(self.pages):
             if self.group:
                 k = self.group_of(p)
@@ -450,6 +455,48 @@ class App:
                     continue
             out.append(("r", i))
         return out
+
+    def cursor_index(self, disp):
+        """Position of the cursor (a group header, or the selected page) in the rows to draw; None when not shown."""
+        for j, (t, i) in enumerate(disp):
+            if self.hdr:
+                if t == "h" and self.header_key.get(i) == self.hdr:
+                    return j
+            elif t == "r" and i == self.sel:
+                return j
+        return None
+
+    def move_cursor(self, d):
+        """↑ ↓: next or previous line, group headers included while the list is grouped."""
+        if not self.group:
+            self.step_sel(d)
+            return
+        disp = self.build_display()
+        cur = self.cursor_index(disp)
+        if cur is None:
+            self.hdr = None
+            self.step_sel(d)
+            return
+        if 0 <= cur + d < len(disp):
+            t, i = disp[cur + d]
+            if t == "h":
+                self.hdr = self.header_key.get(i)
+            else:
+                self.hdr, self.sel = None, i
+
+    def header_key_press(self, k):
+        """Keys while the cursor is on a group header: → opens it (then goes into it), ← folds it, ⏎ toggles."""
+        folded = self.hdr in self.collapsed
+        if k in (curses.KEY_RIGHT, ord("l")):
+            if folded:
+                self.toggle_group(self.hdr)
+            else:
+                self.move_cursor(1)
+        elif k in (curses.KEY_LEFT, ord("h")):
+            if not folded:
+                self.toggle_group(self.hdr)
+        else:
+            self.toggle_group(self.hdr)
 
     def group_of(self, page):
         return nt.prop_text(page["properties"].get(self.cfg["status_property"])) or "No status"
@@ -474,11 +521,11 @@ class App:
         if everything:
             self.collapsed = set() if self.collapsed else set(keys)
         else:
-            key = key or (self.group_of(self.pages[self.sel]) if self.pages else None)
+            key = key or self.hdr or (self.group_of(self.pages[self.sel]) if self.pages else None)
             if key is None:
                 return
             self.collapsed ^= {key}
-        if self.pages and self.folded(self.sel):  # keep the selection on a page you can see
+        if self.pages and not self.hdr and self.folded(self.sel):  # keep the selection on a page you can see
             self.step_sel(1)
             if self.folded(self.sel):
                 self.step_sel(-1)
@@ -748,6 +795,12 @@ class App:
         """Right-hand pane of a wide layout: the selected page's title, facts and body."""
         if not self.pages or self.sel >= len(self.pages) or width < 20:
             return
+        if self.hdr:
+            n = sum(1 for pg in self.pages if self.group_of(pg) == self.hdr)
+            self.scr.addnstr(top, x0, nt.clip(self.hdr, width), width, curses.A_BOLD)
+            self.scr.addnstr(top + 1, x0, "%d page%s · %s" % (n, "" if n == 1 else "s", "folded" if self.hdr in self.collapsed else "open"), width, curses.A_DIM)
+            self.scr.addnstr(top + 3, x0, "→ opens the group, ← folds it, ⏎ toggles", width, curses.A_DIM)
+            return
         p = self.pages[self.sel]
         y = top
         for line in textwrap.wrap(nt.clean(nt.page_title(p)), width)[:3]:
@@ -814,7 +867,9 @@ class App:
         peek = 4 if (h >= 20 and not wide) else 0  # the selected page in full, since titles get clipped in the table
         rows = h - 6 - peek
         disp = self.build_display()
-        sel_d = next((j for j, (t, i) in enumerate(disp) if t == "r" and i == self.sel), 0)
+        if self.hdr and self.hdr not in self.header_key.values():
+            self.hdr = None
+        sel_d = self.cursor_index(disp) or 0
         if sel_d < self.top:
             self.top = max(0, sel_d - (1 if sel_d > 0 and disp[sel_d - 1][0] == "h" else 0))
         if sel_d >= self.top + rows:
@@ -824,11 +879,14 @@ class App:
             y = 3 + r
             if kind == "h":
                 fold = "▸ " if self.header_key.get(i) in self.collapsed else "▾ "
-                self.scr.addnstr(y, 0, fold + i, tw_total - 1, curses.A_BOLD | curses.A_DIM)
+                on_h = self.hdr is not None and self.header_key.get(i) == self.hdr
+                if on_h:
+                    self.scr.addnstr(y, 0, " " * (tw_total - 1), tw_total - 1, curses.A_REVERSE)
+                self.scr.addnstr(y, 0, fold + i, tw_total - 1, curses.A_REVERSE | curses.A_BOLD if on_h else curses.A_BOLD | curses.A_DIM)
                 self.hits.append((y, 0, tw_total, "group", self.header_key.get(i)))
                 continue
             pg = self.pages[i]
-            on = i == self.sel
+            on = i == self.sel and not self.hdr
             base = curses.A_REVERSE if on else (curses.A_DIM if stale else 0)
             self.scr.addnstr(y, 0, " " * (tw_total - 1), tw_total - 1, base)
             kind_ = self.status_kind(pg)
@@ -869,7 +927,7 @@ class App:
             for y in range(2, h - 3):
                 self.scr.addnstr(y, tw_total, "┃" if self.focus == "preview" else "│", 1, self.cp(2) | curses.A_BOLD if self.focus == "preview" else curses.A_DIM)
             self.draw_preview(tw_total + 2, w - tw_total - 3, 3, h - 3)
-        if peek and self.pages:
+        if peek and self.pages and not self.hdr:
             self.rule(h - 3 - peek, w)
             p = self.pages[self.sel]
             for i, line in enumerate(textwrap.wrap(nt.clean(nt.page_title(p)), max(w - 4, 10))[:2]):
@@ -882,7 +940,8 @@ class App:
                 facts.append("agent " + cell[0])
             self.scr.addnstr(h - 4, 2, "  ·  ".join(facts), w - 3, curses.A_DIM)
         self.rule(h - 3, w)
-        self.footer([("↑↓/PgUp PgDn", "scroll"), ("←", "back to the list"), ("⏎", "open")] if self.focus == "preview" else
+        self.footer([("→", "open group"), ("←", "fold group"), ("⏎", "toggle"), ("g", "ungroup"), ("Tab", "next tab"), ("?", "more")] if self.hdr else
+                    [("↑↓/PgUp PgDn", "scroll"), ("←", "back to the list"), ("⏎", "open")] if self.focus == "preview" else
                     [("⏎", "open"), ("s", "status"), ("d", "delegate"), ("Tab", "next tab"), ("/", "search")]
                     + ([("→", "preview")] if wide else []) + [("e", "edit"), ("z", "compact"), ("n", "new"), ("?", "more")])
 
@@ -2504,6 +2563,12 @@ class App:
         if k == ord("p"):
             self.toggle_preview()
             return True
+        if self.hdr and k in (curses.KEY_RIGHT, ord("l"), curses.KEY_LEFT, ord("h"), 10, 13, curses.KEY_ENTER):
+            self.header_key_press(k)
+            return True
+        if k in (curses.KEY_LEFT, ord("h")) and self.group and self.pages:  # ← from a page: up to its group header
+            self.hdr = self.group_of(self.pages[self.sel])
+            return True
         if k in (curses.KEY_RIGHT, ord("l")) and self.pages:  # → goes in: into the preview, or into the page when there is none
             if self.wide():
                 self.focus = "preview"
@@ -2535,9 +2600,9 @@ class App:
             if self.sel >= n - 1 and self.has_more:
                 self.guard(self.load_more)
                 n = len(self.pages)
-            self.step_sel(1)
+            self.move_cursor(1)
         elif k in (curses.KEY_UP, ord("k")):
-            self.step_sel(-1)
+            self.move_cursor(-1)
         elif k == ord("-"):
             self.toggle_group()
         elif k == ord("="):

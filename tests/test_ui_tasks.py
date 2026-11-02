@@ -622,3 +622,82 @@ class PreviewSwitch(unittest.TestCase):
         app.list_key(ord("p"))
         self.assertTrue(app.preview_on)
         self.assertIn("too narrow", app.msg)
+
+
+class HeaderCursor(unittest.TestCase):
+    def grouped(self, **kw):
+        app, scr = fresh(**kw)
+        app.list_key(ord("g"))
+        app.sel = 0
+        return app, scr
+
+    def top_group(self, app):
+        return app.group_of(app.pages[app.sel])
+
+    def test_up_from_the_first_page_of_a_group_lands_on_its_header(self):
+        app, _ = self.grouped()
+        name = self.top_group(app)
+        app.list_key(curses.KEY_UP)
+        self.assertEqual(app.hdr, name)
+        self.assertIsNone(app.current())
+
+    def test_down_from_a_header_goes_to_the_first_page_of_its_group(self):
+        app, _ = self.grouped()
+        app.list_key(curses.KEY_UP)
+        app.list_key(curses.KEY_DOWN)
+        self.assertIsNone(app.hdr)
+        self.assertEqual(app.sel, 0)
+
+    def test_left_folds_and_right_unfolds_on_a_header(self):
+        app, _ = self.grouped()
+        app.list_key(curses.KEY_UP)
+        name = app.hdr
+        app.list_key(curses.KEY_LEFT)
+        self.assertIn(name, app.collapsed)
+        self.assertEqual(app.hdr, name)  # the cursor stays on the header
+        app.list_key(curses.KEY_RIGHT)
+        self.assertNotIn(name, app.collapsed)
+        app.list_key(curses.KEY_RIGHT)  # already open: goes into the group
+        self.assertIsNone(app.hdr)
+
+    def test_enter_toggles_on_a_header_and_never_opens_a_page(self):
+        app, _ = self.grouped()
+        app.list_key(curses.KEY_UP)
+        app.open_page = lambda page: self.fail("opened a page from a header")
+        app.list_key(10)
+        self.assertIn(app.hdr, app.collapsed)
+
+    def test_left_from_a_page_goes_up_to_its_group_header(self):
+        app, _ = self.grouped()
+        name = self.top_group(app)
+        app.list_key(curses.KEY_LEFT)
+        self.assertEqual(app.hdr, name)
+
+    def test_right_on_a_page_still_goes_into_the_preview(self):
+        app, _ = self.grouped(h=16, w=150)
+        app.draw_list()
+        app.list_key(curses.KEY_RIGHT)
+        self.assertEqual(app.focus, "preview")
+
+    def test_actions_do_nothing_while_the_cursor_is_on_a_header(self):
+        app, _ = self.grouped()
+        app.list_key(curses.KEY_UP)
+        app.popup = lambda *a, **k: self.fail("a popup opened")
+        app.list_key(ord("s"))
+        self.assertEqual(app.client.writes, [])
+
+    def test_the_header_is_drawn_highlighted_with_a_group_summary(self):
+        app, scr = self.grouped(h=20, w=150)
+        app.list_key(curses.KEY_UP)
+        app.draw_list()
+        row = next(y for y in range(5) if "▾" in "".join(scr.grid[y]))
+        self.assertTrue(scr.attrs[row][3] & curses.A_REVERSE)
+        self.assertTrue(scr.has("opens the group"))
+
+    def test_ungrouping_drops_the_header_cursor(self):
+        app, _ = self.grouped()
+        app.list_key(curses.KEY_UP)
+        app.list_key(ord("g"))  # folds
+        app.list_key(ord("g"))  # plain list
+        app.build_display()
+        self.assertIsNone(app.hdr)
