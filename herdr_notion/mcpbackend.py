@@ -50,7 +50,7 @@ def schema_from_state(state):
         t = TYPE_MAP.get(p.get("type"), p.get("type"))
         name = p.get("name")
         if t == "select" or t == "multi_select":
-            props[name] = {"type": t, t: {"options": [{"id": o["name"], "name": o["name"]} for o in p.get("options", [])]}}
+            props[name] = {"type": t, t: {"options": [{"id": o["name"], "name": o["name"], "color": o.get("color")} for o in p.get("options", [])]}}
         elif t == "status":
             opts, groups = [], []
             order = ["to_do", "in_progress", "complete"]  # the order of a Notion board: not started, started, finished

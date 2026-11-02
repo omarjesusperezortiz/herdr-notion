@@ -71,3 +71,7 @@ command = ["claude"]
 [[delegate.agents]]
 name = "codex"
 command = ["codex"]
+
+# Pin a status to a color (grey red blue purple teal amber orange green accent). Without this the colors follow the workflow.
+# [colors]
+# "Review" = "orange"

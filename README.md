@@ -182,6 +182,19 @@ Reload herdr's config after changing it. Right click may be kept by herdr for it
 | a board card | selects it (twice opens it); drag it onto another column to change its status, after a confirm |
 | the wheel | scrolls the pane under the pointer: one row per notch in the list, two lines in the preview and the page. A trackpad swipe sends dozens of events, so at most one counts every 40 ms (on macOS system Python the terminal library cannot say where the wheel turned down, so down uses the last pointer position) |
 
+## Colors
+
+Each status has its own color and glyph, following the workflow: grey (to do), red (a name like Blocked, On hold or Waiting),
+then blue, purple, teal, amber and orange along the statuses in progress in the order Notion lists them, and green for done.
+Select options (Priority) use the color set in Notion; a priority-like column also gets `!!` or `!` marks, so `NO_COLOR=1` loses nothing.
+The selected row keeps its colors on a soft background: your herdr theme's `active_row_bg` when `~/.config/herdr/config.toml` sets one,
+else a quiet grey (reverse video on terminals without 256 colors). To pin a status to a color:
+
+```toml
+[colors]
+"Review" = "orange"      # grey red blue purple teal amber orange green accent
+```
+
 ## Digest
 
 `python3 -m herdr_notion digest` (run it in the checkout) prints what changed in a tab since the last time you ran it: status

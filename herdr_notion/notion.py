@@ -204,6 +204,17 @@ def status_options(schema, prop_name):
     return kind, [o["name"] for o in p[kind].get("options", [])]
 
 
+def select_colors(schema):
+    """{property: {option name: Notion color name}} for the select and multi-select properties that have colors."""
+    out = {}
+    for name, p in (schema.get("properties") or {}).items():
+        if p.get("type") in ("select", "multi_select"):
+            colors = {o["name"]: o["color"] for o in p[p["type"]].get("options", []) if o.get("color")}
+            if colors:
+                out[name] = colors
+    return out
+
+
 def status_groups(schema, prop_name):
     """Map option name -> group name (to_do, in_progress, complete) for a status property."""
     p = (schema.get("properties") or {}).get(prop_name) or {}

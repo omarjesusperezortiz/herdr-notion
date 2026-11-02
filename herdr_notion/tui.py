@@ -18,6 +18,7 @@ from . import config as cfgmod
 from . import delegate as dg
 from . import mcpbackend as mb
 from . import oauth
+from . import palette as pl
 from . import notion as nt
 from . import setup as st
 from . import tomlcompat
@@ -84,6 +85,8 @@ class App:
         self.compact = False  # z: bar only, no status column (the table shows the status word on every row)
         self.hits = []  # clickable regions of the last drawing: (y, x0, x1, action, argument)
         self.focus = "list"  # "preview" while the arrow keys scroll the preview pane
+        self.option_colors = {}  # property -> {option name: Notion color name}
+        self.status_colors, self.status_glyphs = {}, {}  # status name -> color role / glyph (palette.status_colors)
         self.status_order = {}  # status name -> position (the order of the options in Notion, or group_order)
         self.has_more = False
         self.cursor = None
@@ -401,6 +404,8 @@ class App:
             opts = []
         order = list(self.cfg.get("group_order") or []) + [o for o in opts if o not in (self.cfg.get("group_order") or [])]
         self.status_order = {n: i for i, n in enumerate(order)}
+        self.status_colors = pl.status_colors(order, self.groups, self.cfg.get("colors"))
+        self.status_glyphs = pl.status_glyphs(order, self.groups)
 
     def status_rank(self, page):
         text = nt.prop_text(page["properties"].get(self.cfg["status_property"]))
@@ -408,6 +413,7 @@ class App:
 
     def apply_list(self, schema, body, res):
         self.groups = nt.status_groups(schema, self.cfg["status_property"])
+        self.option_colors = nt.select_colors(schema)
         self.set_status_order(schema)
         self.query_body = body
         self.all = res.get("results", [])
@@ -593,7 +599,7 @@ class App:
             if self.group:
                 k = self.group_of(p)
                 if k != last:
-                    text = "%s %s (%d)" % (self.MARK[self.status_kind(p)], k, counts[k])
+                    text = "%s %s (%d)" % (self.status_mark(k), k, counts[k])
                     self.header_key[text] = k
                     out.append(("h", text))
                     last = k
@@ -783,36 +789,78 @@ class App:
     PAIR = {"todo": 1, "progress": 2, "done": 3, "": 0}
 
     def init_colors(self):
-        self.colors = False
-        if os.environ.get("NO_COLOR"):  # the markers (▌ ○ ◐ ✓) still carry the meaning
+        """Color pairs for every role (palette.KEYS), plain and on the selection background. 256 colors when the terminal
+        has them, the 8 base colors otherwise; with NO_COLOR none, and the glyphs still carry the meaning."""
+        self.colors, self.pairs, self.sel_bg = False, {}, False
+        if os.environ.get("NO_COLOR"):
             return
         try:
             curses.start_color()
             curses.use_default_colors()
-            curses.init_pair(1, curses.COLOR_YELLOW, -1)
-            curses.init_pair(2, curses.COLOR_CYAN, -1)
-            curses.init_pair(3, curses.COLOR_GREEN, -1)
-            curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_CYAN)  # active tab
-            curses.init_pair(5, curses.COLOR_RED, -1)  # urgent
-            self.colors = True
+            wide = curses.COLORS >= 256
+            bg = (pl.herdr_selection_bg() or pl.DEFAULT_SELECTION) if wide else -1
+            n = 1
+            for key in pl.KEYS + ("plain",):
+                fg = -1 if key == "plain" else pl.XTERM[key] if wide else pl.BASE8[key]
+                curses.init_pair(n, fg, -1)
+                self.pairs[(key, False)] = n
+                n += 1
+                if wide:
+                    curses.init_pair(n, fg, bg)
+                    self.pairs[(key, True)] = n
+                    n += 1
+            curses.init_pair(n, curses.COLOR_BLACK, pl.XTERM["accent"] if wide else curses.COLOR_CYAN)  # the active tab
+            self.pairs[("tab", False)] = n
+            self.colors, self.sel_bg = True, wide
         except curses.error:
-            pass
+            self.colors = False
+
+    def paint(self, key):
+        """Attribute of a role color (palette.KEYS, 'plain' or 'tab'); without colors, grey is dim and the rest plain."""
+        if not self.colors:
+            return curses.A_DIM if key == "grey" else 0
+        return curses.color_pair(self.pairs.get((key, False), 0))
+
+    def on_attr(self, key=None):
+        """Attribute of text on the selected row: its color on a soft background, or reverse video without 256 colors."""
+        if self.colors and self.sel_bg:
+            return curses.color_pair(self.pairs[(key or "plain", True)])
+        return curses.A_REVERSE | (self.paint(key) if key else 0)
+
+    def cell_style(self, prop, text):
+        """(text to show, color role, bold) of a cell: the color set in Notion for the option, else red for words like
+        'high' or 'urgent'. A priority-like column also gets a mark (!! / !) so the signal survives NO_COLOR."""
+        key = pl.notion_color(self.option_colors.get(prop, {}).get(text)) or ("red" if text.lower() in self.URGENT else None)
+        if "priorit" in prop.lower() and text:
+            if key == "red":
+                return "!! " + text, key, True
+            if key in ("amber", "orange"):
+                return "!  " + text, key, False
+        return text, key, key == "red"
 
     URGENT = ("urgent", "high", "critical", "p0", "p1", "blocker")
 
-    def kind_attr(self, kind):
-        """Display attribute for a status kind: to do is quiet, in progress yellow, done green."""
-        return {"todo": curses.A_DIM, "progress": self.cp(1), "done": self.cp(3)}.get(kind, 0)
+    LEGACY = {1: "amber", 2: "accent", 3: "green", 4: "tab", 5: "red"}
 
     def cp(self, n):
-        return curses.color_pair(n) if self.colors else 0
+        return self.paint(self.LEGACY[n])
+
+    def status_key(self, name):
+        """Color role of a status: from the ramp of the property, or its group when the ramp does not know it."""
+        return self.status_colors.get(name) or {"todo": "grey", "progress": "blue", "done": "green"}.get(self.kind_of(name), "grey")
+
+    def status_mark(self, name):
+        return self.status_glyphs.get(name) or self.MARK[self.kind_of(name)]
+
+    def status_attr(self, name):
+        return self.paint(self.status_key(name))
 
     def status_cell(self, page):
         """(marker, text, color attr) for the status property of a page."""
         prop = self.cfg["status_property"]
         text = nt.prop_text(page["properties"].get(prop))
         kind = self.status_kind(page)
-        return self.MARK[kind], text, self.kind_attr(kind)
+        return self.status_mark(text), text, self.status_attr(text)
 
     def rule(self, y, w):
         self.scr.addnstr(y, 0, "─" * (w - 1), w - 1, curses.A_DIM)
@@ -877,8 +925,8 @@ class App:
 
         def items(rows):
             return [("", "All %d%s" % (total, "+" if more else ""), curses.A_BOLD)] + [
-                (n, "%s %s %d%s" % (self.MARK[self.kind_of(n)], n, c, "+" if more else ""),
-                 self.kind_attr(self.kind_of(n)) if c or n == self.status_filter else curses.A_DIM) for n, c in rows]
+                (n, "%s %s %d%s" % (self.status_mark(n), n, c, "+" if more else ""),
+                 self.status_attr(n) if c or n == self.status_filter else self.paint("grey")) for n, c in rows]
 
         def width(its):
             return sum(len(l) + 3 for _, l, _ in its)
@@ -970,12 +1018,12 @@ class App:
             return
         summary = nt.relations_line(p, body)
         if summary:
-            self.scr.addnstr(y, x0, summary, width, self.cp(2))
+            self.scr.addnstr(y, x0, summary, width, self.paint("teal"))
             y += 1
         kinds = nt.style_lines(body)
         wrapped = []
         for l, kind in zip(body, kinds):
-            attr = {"heading": curses.A_BOLD | curses.A_UNDERLINE, "code": self.cp(2), "done": self.cp(3)}.get(kind, self.BODY_ATTR.get(kind, 0))
+            attr = {"heading": curses.A_BOLD | curses.A_UNDERLINE, "code": self.paint("teal"), "done": self.paint("green")}.get(kind, self.BODY_ATTR.get(kind, 0))
             for piece in (textwrap.wrap(nt.display_line(l, kind), width) or [""]):
                 wrapped.append((piece, attr))
         room = bottom - y
@@ -1034,41 +1082,47 @@ class App:
                 fold = "▸ " if self.header_key.get(i) in self.collapsed else "▾ "
                 on_h = self.hdr is not None and self.header_key.get(i) == self.hdr
                 if on_h:
-                    self.scr.addnstr(y, 0, " " * (tw_total - 1), tw_total - 1, curses.A_REVERSE)
-                self.scr.addnstr(y, 0, fold + i, tw_total - 1, curses.A_REVERSE | curses.A_BOLD if on_h else curses.A_BOLD | curses.A_DIM)
+                    self.scr.addnstr(y, 0, " " * (tw_total - 1), tw_total - 1, self.on_attr())
+                hk = self.header_key.get(i)
+                self.scr.addnstr(y, 0, fold + i, tw_total - 1,
+                                 (self.on_attr(self.status_key(hk)) if on_h else self.status_attr(hk) if hk else 0) | curses.A_BOLD)
                 self.hits.append((y, 0, tw_total, "group", self.header_key.get(i)))
                 continue
             pg = self.pages[i]
             on = i == self.sel and not self.hdr
-            base = curses.A_REVERSE if on else (curses.A_DIM if stale else 0)
-            self.scr.addnstr(y, 0, " " * (tw_total - 1), tw_total - 1, base)
-            kind_ = self.status_kind(pg)
-            bar = self.kind_attr(kind_) if not (on and kind_ == "todo") else 0
-            self.scr.addnstr(y, 0, "▌", 1, (curses.A_BOLD if on else base) | bar)
+
+            def rattr(key=None, extra=0, on=on):
+                """Attribute of a cell on this row: its role color, on the selection background when selected."""
+                if on:
+                    return self.on_attr(key) | extra
+                return (curses.A_DIM if stale else 0) | (self.paint(key) if key else 0) | extra
+
+            self.scr.addnstr(y, 0, " " * (tw_total - 1), tw_total - 1, rattr())
+            skey = self.status_key(nt.prop_text(pg["properties"].get(self.cfg["status_property"])))
+            self.scr.addnstr(y, 0, "▌", 1, rattr(skey, curses.A_BOLD if on else 0))
             self.hits.append((y, 0, 2, "mark", i))
             if pg["id"] in self.marked:
-                self.scr.addnstr(y, 1, "+", 1, base | curses.A_BOLD)
+                self.scr.addnstr(y, 1, "+", 1, rattr(None, curses.A_BOLD))
             elif self.unread(pg):
-                self.scr.addnstr(y, 1, "•", 1, base | self.cp(3) | curses.A_BOLD)
-            self.scr.addstr(y, 2, nt.clip(nt.page_title(pg), tw), base | (curses.A_BOLD if on else 0))
+                self.scr.addnstr(y, 1, "•", 1, rattr("accent", curses.A_BOLD))
+            self.scr.addstr(y, 2, nt.clip(nt.page_title(pg), tw), rattr(None, curses.A_BOLD if on else 0))
             x = 2 + tw
             for n, cw in cols:
                 x += 2
                 if n == "STATUS":
-                    mark, text, attr = self.status_cell(pg)
-                    self.scr.addstr(y, x, nt.clip("%s %s" % (mark, text), cw), base | attr)
+                    mark, text, _ = self.status_cell(pg)
+                    self.scr.addstr(y, x, nt.clip("%s %s" % (mark, text), cw), rattr(self.status_key(text)))
                     self.hits.append((y, x, x + cw, "cell", (i, self.cfg["status_property"])))
                 elif n == "EDITED":
-                    self.scr.addnstr(y, x, nt.relative_time(pg.get("last_edited_time")), cw, base | curses.A_DIM)
+                    self.scr.addnstr(y, x, nt.relative_time(pg.get("last_edited_time")), cw, rattr("grey"))
                 elif n == "AGENT":
                     cell = self.agent_cell(pg)
                     if cell:
-                        self.scr.addstr(y, x, nt.clip(cell[0], cw), base | cell[1])
+                        self.scr.addstr(y, x, nt.clip(cell[0], cw), rattr(cell[1]))
                 else:
                     key = next(c for c in extra if c.upper() == n)
-                    text = nt.prop_text(pg["properties"].get(key))
-                    hot = self.cp(5) | curses.A_BOLD if text.lower() in self.URGENT else 0
-                    self.scr.addstr(y, x, nt.clip(text, cw), base | hot)
+                    text, ckey, bold = self.cell_style(key, nt.prop_text(pg["properties"].get(key)))
+                    self.scr.addstr(y, x, nt.clip(text, cw), rattr(ckey, curses.A_BOLD if bold else 0))
                     self.hits.append((y, x, x + cw, "cell", (i, key)))
                 x += cw
             self.hits.append((y, 0, tw_total, "row", i))
@@ -1158,10 +1212,9 @@ class App:
                 name, idxs = cols[ci]
                 x0 = v * cw
                 self.board_spans.append((x0, x0 + cw, ci))
-                kind = self.kind_of(name)
-                head = "%s %s %d" % (self.MARK[kind], name, len(idxs))
+                head = "%s %s %d" % (self.status_mark(name), name, len(idxs))
                 self.scr.addnstr(1, x0 + 1, nt.clip(head, cw - 2), cw - 2,
-                                 curses.A_BOLD | self.kind_attr(kind) | (curses.A_UNDERLINE if ci == self.bcol else 0))
+                                 curses.A_BOLD | self.status_attr(name) | (curses.A_UNDERLINE if ci == self.bcol else 0))
                 if v:
                     for y in range(1, h - 3):
                         self.scr.addnstr(y, x0 - 1, "│", 1, curses.A_DIM)
@@ -1169,7 +1222,7 @@ class App:
                 for r, i in enumerate(idxs[top:top + rows]):
                     pg, y = self.pages[i], 3 + r * self.CARD_ROWS
                     on = ci == self.bcol and top + r == self.brow
-                    base = curses.A_REVERSE if on else 0
+                    base = self.on_attr() if on else 0
                     for dy in range(self.CARD_ROWS - 1):
                         self.scr.addnstr(y + dy, x0, " " * (cw - 2), cw - 2, base)
                         self.hits.append((y + dy, x0, x0 + cw - 1, "card", (ci, top + r)))
@@ -1179,7 +1232,8 @@ class App:
                     cell = self.agent_cell(pg)
                     facts = [nt.prop_text(pg["properties"].get(c)) for c in extra[:1]] + ([cell[0]] if cell else [])
                     mark = "• " if self.unread(pg) else ""
-                    self.scr.addnstr(y + len(lines), x0 + 1, nt.clip(mark + "  ".join(f for f in facts if f), cw - 3), cw - 3, base | curses.A_DIM)
+                    self.scr.addnstr(y + len(lines), x0 + 1, nt.clip(mark + "  ".join(f for f in facts if f), cw - 3), cw - 3,
+                                     self.on_attr("grey") if on else self.paint("grey"))
                 if len(idxs) > top + rows:
                     self.scr.addnstr(h - 4, x0 + 1, "▾ %d more" % (len(idxs) - top - rows), cw - 3, curses.A_DIM)
         self.rule(h - 3, w)
@@ -1314,13 +1368,13 @@ class App:
                 row += ("%-9s %s" % (k[:9], v)).ljust(half)[:half]
             lines.append((" " + row, 0))
         summary = nt.relations_line(page, self.detail["body"].split("\n"))
-        lines += [(" " + page.get("url", ""), curses.A_DIM)] + ([(" " + summary, self.cp(2))] if summary else []) \
+        lines += [(" " + page.get("url", ""), curses.A_DIM)] + ([(" " + summary, self.paint("teal"))] if summary else []) \
             + [("", 0), ("─" * (w - 1), curses.A_DIM)]
         body = self.detail["body"].split("\n")
         for l, kind in zip(body, nt.style_lines(body)):
             attr = {"heading": curses.A_BOLD | curses.A_UNDERLINE, "rule": curses.A_DIM,
-                    "quote": curses.A_DIM, "fence": curses.A_DIM, "code": self.cp(2),
-                    "done": self.cp(3), "todo": 0}.get(kind, 0)
+                    "quote": curses.A_DIM, "fence": curses.A_DIM, "code": self.paint("teal"),
+                    "done": self.paint("green"), "todo": 0}.get(kind, 0)
             text = nt.display_line(l, kind)
             wrapped = [text[i:i + w - 3] for i in range(0, max(len(text), 1), max(w - 3, 1))]
             lines += [(" " + x, attr) for x in wrapped]
@@ -1728,18 +1782,18 @@ class App:
         self.save_delegations()
 
     def agent_cell(self, page):
-        """(text, attr) for the AGENT column of a page, or None when it was never delegated."""
+        """(text, color role) for the AGENT column of a page, or None when no agent is known for it."""
         d = self.delegations.get(page["id"])
         if not d:
             a = self.found.get(page["id"])
             if a:
                 return "%s %s" % ("◉" if a["status"] == "working" else "○", a["name"] or a["agent"]), \
-                    self.cp(2) if a["status"] == "working" else curses.A_DIM
+                    "purple" if a["status"] == "working" else "grey"
             return None
         if d.get("done"):
-            return "✔ %s" % d["agent"], self.cp(3)
+            return "✔ %s" % d["agent"], "green"
         working = d.get("status") == "working"
-        return "%s %s" % ("◉" if working else "○", d["agent"]), self.cp(2) if working else curses.A_DIM
+        return "%s %s" % ("◉" if working else "○", d["agent"]), "purple" if working else "grey"
 
     def poll_agents(self):
         """Every few seconds ask herdr how the delegated agents are doing (never while something else loads)."""
