@@ -2414,23 +2414,66 @@ class App:
         self.msg = "now browsing %s" % choice["title"]
         return True
 
-    def help(self):
-        rows = []
+    @staticmethod
+    def help_lines(width):
+        """[(text, is_heading)] for the help box: every key on one line, long descriptions wrapped under themselves."""
+        out = []
         for title, items in HELP:
-            rows.append((title, True))
-            rows += [("  %-12s %s" % kv, False) for kv in items]
-            rows.append(("", False))
+            out.append((title, True))
+            for key, desc in items:
+                wrapped = textwrap.wrap(desc, max(width - 16, 10)) or [""]
+                out.append(("  %-12s %s" % (key, wrapped[0]), False))
+                out += [("  " + " " * 12 + " " + more, False) for more in wrapped[1:]]
+            out.append(("", False))
+        return out[:-1]
+
+    def help(self):
+        """? : every key, in a box that scrolls when the pane is short (↑↓ j k, PgUp PgDn, Space, g G; any other key closes)."""
         h, w = self.scr.getmaxyx()
-        bw = min(w - 2, max(len(r) for r, _ in rows) + 4)
+        bw = min(w - 2, 100)
+        rows = self.help_lines(bw - 4)
         bh = min(h - 2, len(rows) + 2)
+        room = bh - 2
+        top = 0
         win = curses.newwin(bh, bw, (h - bh) // 2, (w - bw) // 2)
-        win.box()
-        win.addnstr(0, 2, " Keys ", bw - 4, curses.A_BOLD)
-        for i, (r, head) in enumerate(rows[:bh - 2]):
-            win.addnstr(1 + i, 2, r, bw - 4, curses.A_BOLD if head else 0)
         win.keypad(True)
-        win.refresh()
-        win.getch()
+        while True:
+            win.erase()
+            win.box()
+            more = len(rows) > room
+            win.addnstr(0, 2, " Keys%s " % (" · ↑↓ scroll, Esc closes" if more else ""), bw - 4, curses.A_BOLD)
+            for n, (r, head) in enumerate(rows[top:top + room]):
+                win.addnstr(1 + n, 2, r, bw - 4, curses.A_BOLD if head else 0)
+            if more:
+                cue = " %d%% " % min(100, 100 * (top + room) // len(rows))
+                win.addnstr(bh - 1, bw - len(cue) - 2, cue, len(cue), curses.A_DIM)
+            win.refresh()
+            k = win.getch()
+            top = self.help_scroll(k, top, len(rows), room)
+            if top is None:
+                return
+
+    @staticmethod
+    def help_scroll(k, top, total, room):
+        """New scroll offset after key `k`, or None when the key closes the help."""
+        last = max(0, total - room)
+        if total <= room:
+            return None if k not in (curses.KEY_RESIZE,) else top
+        if k in (curses.KEY_DOWN, ord("j")):
+            return min(last, top + 1)
+        if k in (curses.KEY_UP, ord("k")):
+            return max(0, top - 1)
+        if k in (curses.KEY_NPAGE, ord(" "), ord("J")):
+            return min(last, top + room - 1)
+        if k in (curses.KEY_PPAGE, ord("b"), ord("K")):
+            return max(0, top - room + 1)
+        if k == ord("g"):
+            return 0
+        if k == ord("G"):
+            return last
+        if k in (curses.KEY_RESIZE, curses.KEY_MOUSE):
+            return top
+        return None
 
     def copy(self, what):
         argv = nt.clipboard_cmd(shutil.which)

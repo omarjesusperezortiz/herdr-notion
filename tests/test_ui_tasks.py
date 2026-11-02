@@ -701,3 +701,53 @@ class HeaderCursor(unittest.TestCase):
         app.list_key(ord("g"))  # plain list
         app.build_display()
         self.assertIsNone(app.hdr)
+
+
+class HelpScroll(unittest.TestCase):
+    def setUp(self):
+        from herdr_notion.tui import App
+        self.App = App
+
+    def test_every_key_is_listed_and_long_lines_wrap_instead_of_being_cut(self):
+        lines = self.App.help_lines(60)
+        text = "\n".join(t for t, _ in lines)
+        for key in ("Tab / Shift-Tab", "fold or unfold", "quick filter", "board"):
+            self.assertIn(key, text)
+        self.assertTrue(all(len(t) <= 60 for t, _ in lines))
+
+    def test_scroll_keys_move_within_bounds_and_other_keys_close(self):
+        sc = self.App.help_scroll
+        self.assertEqual(sc(curses.KEY_DOWN, 0, 50, 10), 1)
+        self.assertEqual(sc(curses.KEY_UP, 0, 50, 10), 0)
+        self.assertEqual(sc(ord("G"), 0, 50, 10), 40)
+        self.assertEqual(sc(curses.KEY_DOWN, 40, 50, 10), 40)
+        self.assertEqual(sc(ord(" "), 0, 50, 10), 9)
+        self.assertEqual(sc(curses.KEY_PPAGE, 5, 50, 10), 0)
+        self.assertEqual(sc(ord("g"), 30, 50, 10), 0)
+        self.assertIsNone(sc(27, 3, 50, 10))
+        self.assertIsNone(sc(ord("q"), 3, 50, 10))
+
+    def test_when_everything_fits_any_key_closes(self):
+        self.assertIsNone(self.App.help_scroll(curses.KEY_DOWN, 0, 8, 10))
+
+    def test_a_short_pane_gets_a_box_that_scrolls(self):
+        app, _ = fresh(h=14, w=100)
+        keys = iter([curses.KEY_DOWN, ord("G"), 27])
+        seen = []
+
+        class Win:
+            def keypad(self, f): pass
+            def erase(self): pass
+            def box(self): pass
+            def refresh(self): pass
+            def getch(self): return next(keys)
+            def addnstr(self, y, x, text, n, attr=0): seen.append(text)
+
+        saved = curses.newwin
+        curses.newwin = lambda *a: Win()
+        try:
+            app.help()
+        finally:
+            curses.newwin = saved
+        self.assertTrue(any("scroll" in t for t in seen))
+        self.assertTrue(any("100%" in t for t in seen))  # reached the end with G
