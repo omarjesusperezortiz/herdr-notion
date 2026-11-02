@@ -1,24 +1,31 @@
 # herdr-notion
 
-A Notion database TUI for a [herdr](https://herdr.dev) pane, modelled on
-[herdr-jira](https://github.com/a2u/herdr-jira). Browse the pages of **one**
-Notion database through named filters, search by title, read a page, change its
-status, and hand a page to an agent running in herdr.
+A Notion database in a [herdr](https://herdr.dev) pane, from the keyboard. Browse **one** database through named filters, read a
+page, change its status, and hand a ticket to an agent running in herdr. Modelled on [herdr-jira](https://github.com/a2u/herdr-jira).
 
-```
- Notion: Mine (3)
- Fix login bug          In progress   Ada
- Write onboarding doc   To do         Ada
- Update pricing page    In review     Ada
- Enter open · f filters · / search · s status · d delegate · o browser · ? help
-```
+https://github.com/user-attachments/assets/3f4a75fd-a710-483f-a1e0-327f9bf88108
 
-Python 3 standard library only (urllib, curses, json). No install step, no
-dependencies. Python 3.11+ uses `tomllib`; older Pythons use a small built-in
-TOML parser.
+<sub>15 seconds, drawn from the real app (demo tickets): `j j j` to pick a ticket, `Enter` to read it, `s` to change its status (the
+picker, the confirm, the toast), `d` to send it to an agent (pick one, type a note, see exactly what will be sent). Film made with
+[onetake](https://github.com/feitangyuan/onetake).</sub>
 
-> **Status:** tested against hand-written Notion JSON responses only, never
-> against the real API. See [Tested](#tested).
+## What you get
+
+- **Your database as tabs.** Named filters (Mine, Sprint, Open, All), a status chip row, search, grouping by status (`g`, foldable) and
+  a board with a column per status (`B`). Each status has its own color and glyph; the layout is remembered per tab.
+- **Read without leaving the terminal.** The selected page shows beside the list on a wide pane (below it on a narrow one); `Enter`
+  opens it with its body, comments and linked pages.
+- **Changes ask first, in the middle of the screen.** Changing a status, editing a property, commenting, creating a page: each opens a
+  box you answer with `⏎` or `Esc`. `u` undoes the last status change for a minute.
+- **Hand work to an agent.** `d` lists the agents running in herdr, asks for a note and shows exactly what will be sent; `w` starts
+  an agent in a new git worktree named after the ticket. The agent column shows who is working on which ticket.
+- **Keys first, mouse when you want it.** `Ctrl-P` jumps to any ticket or command; `M` turns the mouse on.
+
+Python 3 standard library only (urllib, curses, json). No install step, no dependencies. Python 3.11+ uses `tomllib`; older Pythons
+use a small built-in TOML parser.
+
+> **Status:** used against a real Notion workspace for everything that reads (sign-in, tabs, lists, pages, the agents view). The
+> writes (status change, edits, comments, new pages) are tested against fakes only. See [Tested](#tested).
 
 ## Install
 
