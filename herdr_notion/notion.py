@@ -352,6 +352,12 @@ def fuzzy_score(query, text):
     return total - len(t) * 0.05
 
 
+def chip_value(text, limit=36):
+    """A property value for a chip: timestamps shortened to the day, long text cut."""
+    m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})T[\d:.]+Z?", text or "")
+    return clip(m.group(1) if m else text, limit)
+
+
 def elapsed_text(seconds):
     """'47s', '12m', '2h04m', '4d3h': how long something has run, in the shortest honest form."""
     s = max(0, int(seconds))

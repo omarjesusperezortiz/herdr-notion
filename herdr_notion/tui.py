@@ -27,7 +27,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "remove the newest filter pill, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -86,6 +86,7 @@ class App:
         self.hits = []  # clickable regions of the last drawing: (y, x0, x1, action, argument)
         self.focus = "list"  # "preview" while the arrow keys scroll the preview pane
         self.colors, self.pairs, self.sel_bg = False, {}, False  # filled by init_colors
+        self.dtab, self.drow = 0, 0  # section of the page view (Body, Comments, Related) and the selected linked page
         self.preview_mode = "ticket"  # a switches the preview to the agent's terminal
         self.agent_text = {}  # pane id -> (time fetched, lines)
         self.last_agents = []  # herdr's agent list as of the last poll
@@ -214,7 +215,9 @@ class App:
                 self.dscroll = max(0, self.dscroll + 2 * wheel)
             elif b & curses.BUTTON1_PRESSED:
                 hit = self.hit_at(x, y)
-                if hit and hit[3] == "key" and self.hint_key(hit[4]) is not None:
+                if hit and hit[3] == "dtab":
+                    self.dtab, self.dscroll, self.drow = hit[4], 0, 0
+                elif hit and hit[3] == "key" and self.hint_key(hit[4]) is not None:
                     return self.send_key(self.hint_key(hit[4]))
             return True
         if self.agents_view:
@@ -592,6 +595,7 @@ class App:
         pid = page["id"]
         self.mark_seen(page)
         self.note_recent(page)
+        self.dtab, self.drow = 0, 0
         self.detail = {"page": page, "lines": [], "body": "Loading…" if pid not in self.cache else "\n".join(self.cache[pid])}
         self.dscroll = 0
 
@@ -1670,6 +1674,41 @@ class App:
         self.brow = next((r for r, j in enumerate(idxs) if self.pages[j]["id"] == page["id"]), 0)
         self.status_written(prop, kind, name, [(page["id"], old)], "%s set to %s" % (prop, name))
 
+    DETAIL_TABS = ("Body", "Comments", "Related")
+
+    def detail_lines(self, w):
+        """[(text, attr)] of the section being read: the body, the comments as a conversation, or the linked pages."""
+        d = self.detail
+        lines = []
+        if self.dtab == 0:
+            body = d["body"].split("\n")
+            for l, kind in zip(body, nt.style_lines(body)):
+                attr = {"heading": curses.A_BOLD | curses.A_UNDERLINE, "rule": curses.A_DIM,
+                        "quote": curses.A_DIM, "fence": curses.A_DIM, "code": self.paint("teal"),
+                        "done": self.paint("green"), "todo": 0}.get(kind, 0)
+                text = nt.display_line(l, kind)
+                wrapped = [text[i:i + w - 3] for i in range(0, max(len(text), 1), max(w - 3, 1))]
+                lines += [(" " + x, attr) for x in wrapped]
+        elif self.dtab == 1:
+            comments = d.get("comments")
+            if comments is None:
+                lines.append((" Loading the comments…", curses.A_DIM))
+            elif not comments:
+                lines.append((" No comments yet · c writes one", curses.A_DIM))
+            for c_ in comments or []:
+                lines.append((" %s · %s ago" % (c_["author"], nt.relative_time(c_["when"])), curses.A_BOLD | self.paint("amber")))
+                for para in (c_["text"].split("\n") or [""]):
+                    for piece in (textwrap.wrap(para, max(w - 5, 10)) or [""]):
+                        lines.append(("   " + piece, 0))
+                lines.append(("", 0))
+        else:
+            rel = nt.page_relations(d["page"])
+            if not rel:
+                lines.append((" No linked pages", curses.A_DIM))
+            for n, (prop, _, title) in enumerate(rel):
+                lines.append((" ↗ %s  (%s)" % (title or "untitled page", prop), self.on_attr("teal") if n == self.drow else self.paint("teal")))
+        return lines
+
     def draw_detail(self):
         h, w = self.scr.getmaxyx()
         self.scr.erase()
@@ -1681,45 +1720,61 @@ class App:
         if len(right) + 2 < w:
             self.scr.addnstr(0, w - len(right) - 1, right, len(right), sattr | curses.A_BOLD)
         self.rule(1, w)
-        # property block in two columns, then the link, then the body
-        props = [kv for kv in nt.page_properties(page) if kv[0] != self.cfg["status_property"]]
-        half = (w - 2) // 2 if w >= 60 else w - 2
-        lines = []
-        step = 2 if w >= 60 else 1
-        for i in range(0, len(props), step):
-            row = ""
-            for k, v in props[i:i + step]:
-                row += ("%-9s %s" % (k[:9], v)).ljust(half)[:half]
-            lines.append((" " + row, 0))
-        summary = nt.relations_line(page, self.detail["body"].split("\n"))
-        lines += [(" " + page.get("url", ""), curses.A_DIM)] + ([(" " + summary, self.paint("teal"))] if summary else []) \
-            + [("", 0), ("─" * (w - 1), curses.A_DIM)]
-        body = self.detail["body"].split("\n")
-        for l, kind in zip(body, nt.style_lines(body)):
-            attr = {"heading": curses.A_BOLD | curses.A_UNDERLINE, "rule": curses.A_DIM,
-                    "quote": curses.A_DIM, "fence": curses.A_DIM, "code": self.paint("teal"),
-                    "done": self.paint("green"), "todo": 0}.get(kind, 0)
-            text = nt.display_line(l, kind)
-            wrapped = [text[i:i + w - 3] for i in range(0, max(len(text), 1), max(w - 3, 1))]
-            lines += [(" " + x, attr) for x in wrapped]
+        y = 2
+        # properties as a row of "name value" chips, wrapped to at most three rows
+        x, used, hidden = 1, 0, 0
+        for k, v in nt.page_properties(page):
+            if k == self.cfg["status_property"]:
+                continue
+            text, key, bold = self.cell_style(k, nt.chip_value(v))
+            need = len(k) + 1 + nt.cell_width(text) + 2
+            if x + need > w - 1:
+                if used >= 2:
+                    hidden += 1
+                    continue
+                used, y, x = used + 1, y + 1, 1
+            self.scr.addnstr(y, x, k, max(w - 1 - x, 0), curses.A_DIM)
+            self.scr.addnstr(y, x + len(k) + 1, nt.clip(text, max(w - 2 - x - len(k), 1)), max(w - 2 - x - len(k), 1),
+                             self.paint(key) | (curses.A_BOLD if bold else 0))
+            x += need
+        if hidden:
+            more = "+%d" % hidden  # properties that did not fit
+            self.scr.addnstr(y, min(x, w - 1 - len(more)), more, len(more), curses.A_DIM | curses.A_BOLD)
+        y += 1
+        self.scr.addnstr(y, 1, page.get("url", ""), w - 2, curses.A_DIM)
+        y += 1
+        prog = nt.checklist_progress(self.detail["body"].split("\n"))
+        if prog:
+            filled = round(10 * prog[0] / prog[1])
+            self.scr.addnstr(y, 1, "█" * filled, filled, self.paint("green"))
+            self.scr.addnstr(y, 1 + filled, "░" * (10 - filled), 10 - filled, curses.A_DIM)
+            self.scr.addnstr(y, 12, "%d of %d subtasks" % prog, w - 13)
+            y += 1
         comments = self.detail.get("comments") or []
-        if comments:
-            lines += [("", 0), ("─" * (w - 1), curses.A_DIM), (" Comments (%d)" % len(comments), curses.A_BOLD)]
-            for c_ in comments:
-                head = "%s · %s" % (c_["author"], nt.relative_time(c_["when"]))
-                lines.append((" " + head, self.cp(1) | curses.A_BOLD))
-                for para in (c_["text"].split("\n") or [""]):
-                    for piece in (textwrap.wrap(para, max(w - 5, 10)) or [""]):
-                        lines.append(("   " + piece, 0))
-        view = h - 5
+        rel = nt.page_relations(page)
+        counts = (0, len(comments), len(rel))
+        x = 1
+        for n, name in enumerate(self.DETAIL_TABS):
+            label = " %s%s " % (name, " %d" % counts[n] if counts[n] else "")
+            self.scr.addnstr(y, x, label, max(w - 1 - x, 0), (self.paint("tab") | curses.A_BOLD) if n == self.dtab else curses.A_DIM)
+            self.hits.append((y, x, x + len(label), "dtab", n))
+            x += len(label) + 1
+        y += 1
+        self.rule(y, w)
+        top = y + 1
+        lines = self.detail_lines(w)
+        view = max(1, h - 3 - top)
+        if self.dtab == 2:
+            self.drow = max(0, min(self.drow, max(len(rel) - 1, 0)))
+            self.dscroll = max(0, min(self.drow - view + 1, len(lines) - view)) if lines else 0
         self.dscroll = max(0, min(self.dscroll, max(0, len(lines) - view)))
         for r, (l, attr) in enumerate(lines[self.dscroll:self.dscroll + view]):
-            self.scr.addnstr(2 + r, 0, l, w - 1, attr)
+            self.scr.addnstr(top + r, 0, l, w - 1, attr)
         self.rule(h - 3, w)
         if len(lines) > view:
             ind = "%d%%" % min(100, 100 * (self.dscroll + view) // len(lines))
             self.scr.addnstr(h - 3, max(0, w - len(ind) - 2), ind, len(ind), curses.A_DIM)
-        self.footer([("s", "status"), ("e", "edit"), ("c", "comment"), ("d", "delegate"), ("o", "browser"), ("q", "back"), ("?", "more")])
+        self.footer([("s", "status"), ("e", "edit"), ("c", "comment"), ("Tab", "section"), ("d", "delegate"), ("o", "browser"), ("q", "back"), ("?", "more")])
 
     def footer(self, hints):
         h, w = self.scr.getmaxyx()
@@ -3431,8 +3486,12 @@ class App:
         i = self.popup("Related pages", ["%s  (%s)" % (t or "untitled page", prop) for prop, _, t in rel])
         if i is None:
             return
+        self.open_relation(rel[i][1])
+
+    def open_relation(self, pid):
+        """Open a linked page; ← comes back to the page you were on."""
         self.note("Opening…")
-        target = self.client.get_page(rel[i][1])
+        target = self.client.get_page(pid)
         self.trail = (self.trail + [self.detail["page"]]) if self.detail else []
         self.open_page(target)
 
@@ -3625,10 +3684,25 @@ class App:
                 self.open_page(self.trail.pop())
             else:
                 self.detail = None
+        elif k in (9, curses.KEY_BTAB):
+            self.dtab = (self.dtab + (-1 if k == curses.KEY_BTAB else 1)) % len(self.DETAIL_TABS)
+            self.dscroll = self.drow = 0
+        elif k in (ord("1"), ord("2"), ord("3")):
+            self.dtab, self.dscroll, self.drow = k - ord("1"), 0, 0
         elif k in (curses.KEY_DOWN, ord("j")):
-            self.dscroll += 1
+            if self.dtab == 2:
+                self.drow += 1
+            else:
+                self.dscroll += 1
         elif k in (curses.KEY_UP, ord("k")):
-            self.dscroll = max(0, self.dscroll - 1)
+            if self.dtab == 2:
+                self.drow = max(0, self.drow - 1)
+            else:
+                self.dscroll = max(0, self.dscroll - 1)
+        elif k in (10, 13, curses.KEY_ENTER) and self.dtab == 2:
+            rel = nt.page_relations(self.detail["page"])
+            if rel:
+                self.guard(self.open_relation, rel[min(self.drow, len(rel) - 1)][1])
         elif k in (curses.KEY_NPAGE, ord(" ")):
             self.dscroll += h - 3
         elif k == curses.KEY_PPAGE:

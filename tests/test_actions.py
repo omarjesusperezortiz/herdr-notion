@@ -62,8 +62,9 @@ class Comments(unittest.TestCase):
         app.client.comment_list = [{"id": "c1", "author": "Grace", "when": "2026-10-30T09:00:00Z", "text": "Can we ship behind a flag?"}]
         app.open_page(app.pages[0])
         settle(app)
+        app.dtab = 1
         app.draw_detail()
-        self.assertTrue(scr.has("Comments (1)"))
+        self.assertTrue(scr.has("Comments 1"))
         self.assertTrue(scr.has("Grace"))
         self.assertTrue(scr.has("ship behind a flag"))
 
@@ -185,9 +186,10 @@ class CommentText(unittest.TestCase):
         app.client.comment_list = self.client().comments("https://x/p/1")
         app.open_page(app.pages[0])
         settle(app)
+        app.dtab = 1
         app.draw_detail()
         text = scr.text()
-        self.assertIn("Comments (2)", text)
+        self.assertIn("Comments 2", text)
         self.assertNotIn("<br", text)
         self.assertNotIn("<b>", text)
         self.assertIn("@Grace", text)

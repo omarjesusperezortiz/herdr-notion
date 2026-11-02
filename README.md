@@ -130,6 +130,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `c` | Choose which properties the table shows and in what order (space ticks, `J` `K` move, `⏎` saves). Kept in `layout.json` next to your config |
 | `a` | In a wide pane, show the selected ticket's agent (its terminal, live, re-read every 2 s) in the preview instead of the ticket; `a` again goes back |
 | `A` | Agents view: every agent herdr lists with its state, how long it has been on its ticket and the ticket (delegated or attached from here, matched by ticket id, or the id written in its name). `⏎` jumps to its pane, `a` attaches it to a ticket, `r` asks herdr again, `A` or `Esc` goes back |
+| `Tab` / `1` `2` `3` (in a page) | Sections of the page view: Body, Comments (read like a conversation, `c` writes one) and Related (`j` `k` pick a linked page, `⏎` opens it, `←` comes back). Properties show as chips at the top and to-dos as a progress bar |
 | `u` | Undo the last status change (single, bulk, `>`, board move) for a minute. A toast says what happened: green for done, red for a failure (stays until a key) |
 | `p` | Show or hide the preview pane. Hidden, the table uses the whole width and `→` opens the page |
 | `-` / `=` | Fold or unfold just the selected group / all groups (`-` turns grouping on if it is off; clicking a group header does the same) |

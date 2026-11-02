@@ -856,3 +856,132 @@ class TicketIdIn(unittest.TestCase):
         app.list_key(ord("A"))
         app.draw_agents()
         self.assertTrue(scr.has("ET-9999 · not in this list"))
+
+
+class PageSections(unittest.TestCase):
+    def page_app(self, **kw):
+        app, scr = fresh(h=kw.pop("h", 30), w=kw.pop("w", 100), **kw)
+        a, b = app.pages[0], app.pages[1]
+        a["properties"]["Related"] = {"type": "relation", "relation": [{"id": b["id"], "title": nt.page_title(b)},
+                                                                       {"id": "other", "title": "Other page"}]}
+        a["properties"]["Owner"] = {"type": "people", "people": [{"id": "u", "name": "Ada"}]}
+        app.detail = {"page": a, "lines": [], "body": "## Goal\nUsers land on /home.\n[x] Reproduce\n[ ] Add a test",
+                      "comments": [{"id": "c1", "author": "Ana", "when": "2026-10-30T09:00:00Z", "text": "Reproduced it."},
+                                   {"id": "c2", "author": "Omar", "when": "2026-10-31T09:00:00Z", "text": "Fix is in review."}]}
+        app.dscroll = 0
+        return app, scr, a, b
+
+    def test_properties_are_chips_and_the_header_shows_the_progress_bar_and_the_sections(self):
+        app, scr, a, _ = self.page_app()
+        app.draw_detail()
+        for text in ("Priority", "Owner Ada", "1 of 2 subtasks", "█", "Body", "Comments 2", "Related 2"):
+            self.assertTrue(scr.has(text), text)
+        self.assertTrue(scr.has("Users land on /home"))  # the body is the first section
+
+    def test_tab_and_the_digits_switch_sections(self):
+        app, scr, _, _ = self.page_app()
+        app.detail_key(9)
+        self.assertEqual(app.dtab, 1)
+        app.draw_detail()
+        self.assertTrue(scr.has("Ana · "))
+        self.assertTrue(scr.has("Reproduced it."))
+        self.assertFalse(scr.has("Users land on /home"))
+        app.detail_key(curses.KEY_BTAB)
+        self.assertEqual(app.dtab, 0)
+        app.detail_key(ord("3"))
+        self.assertEqual(app.dtab, 2)
+        app.detail_key(9)
+        self.assertEqual(app.dtab, 0)  # wraps
+
+    def test_switching_sections_starts_at_the_top(self):
+        app, _, _, _ = self.page_app()
+        app.dscroll = 40
+        app.detail_key(9)
+        self.assertEqual(app.dscroll, 0)
+
+    def test_related_lists_the_links_and_enter_opens_the_selected_one(self):
+        app, scr, a, b = self.page_app()
+        app.detail_key(ord("3"))
+        app.draw_detail()
+        self.assertTrue(scr.has("↗ " + nt.page_title(b)))
+        self.assertTrue(scr.has("Other page"))
+        opened = []
+        app.client.get_page = lambda pid: {"id": pid, "properties": {}}
+        app.open_page = lambda page: opened.append(page["id"])
+        app.detail_key(ord("j"))
+        app.detail_key(10)
+        self.assertEqual(opened, ["other"])
+        self.assertEqual(app.trail, [a])
+
+    def test_related_cursor_stays_inside_the_list(self):
+        app, _, _, _ = self.page_app()
+        app.detail_key(ord("3"))
+        for _ in range(9):
+            app.detail_key(ord("j"))
+        app.draw_detail()
+        self.assertEqual(app.drow, 1)
+        for _ in range(9):
+            app.detail_key(ord("k"))
+        self.assertEqual(app.drow, 0)
+
+    def test_empty_sections_say_what_to_do(self):
+        app, scr, a, _ = self.page_app()
+        app.detail["comments"] = []
+        a["properties"].pop("Related")
+        app.detail_key(ord("2"))
+        app.draw_detail()
+        self.assertTrue(scr.has("No comments yet · c writes one"))
+        app.detail_key(ord("3"))
+        scr.clear()
+        app.draw_detail()
+        self.assertTrue(scr.has("No linked pages"))
+
+    def test_comments_still_loading_say_so(self):
+        app, scr, _, _ = self.page_app()
+        del app.detail["comments"]
+        app.detail_key(ord("2"))
+        app.draw_detail()
+        self.assertTrue(scr.has("Loading the comments"))
+
+    def test_a_page_without_to_dos_has_no_progress_bar(self):
+        app, scr, _, _ = self.page_app()
+        app.detail["body"] = "plain text"
+        app.draw_detail()
+        self.assertFalse(scr.has("subtasks"))
+
+    def test_chips_wrap_on_a_narrow_pane_and_say_how_many_did_not_fit(self):
+        app, scr, a, _ = self.page_app(w=40)
+        for i in range(12):
+            a["properties"]["Extra%d" % i] = {"type": "rich_text", "rich_text": [{"plain_text": "value %d" % i}]}
+        app.draw_detail()
+        self.assertTrue(any("+10" in scr.row(y) for y in range(2, 8)))
+
+    def test_a_click_on_a_section_label_switches_to_it(self):
+        app, scr, _, _ = self.page_app()
+        app.draw_detail()
+        x, y = next((h[1] + 1, h[0]) for h in app.hits if h[3] == "dtab" and h[4] == 1)
+        with mock.patch("curses.getmouse", return_value=(0, x, y, 0, curses.BUTTON1_PRESSED)):
+            app.detail_key(curses.KEY_MOUSE)
+        self.assertEqual(app.dtab, 1)
+
+    def test_opening_a_page_starts_on_the_body(self):
+        app, _, a, _ = self.page_app()
+        app.start_job = lambda *a_, **k: None
+        app.dtab = 2
+        app.open_page(a)
+        self.assertEqual((app.dtab, app.drow), (0, 0))
+
+    def test_the_footer_names_the_section_key(self):
+        app, scr, _, _ = self.page_app()
+        app.draw_detail()
+        self.assertTrue(scr.has("Tab section"))
+
+
+class ChipValue(unittest.TestCase):
+    def test_timestamps_become_days_and_long_text_is_cut(self):
+        self.assertEqual(nt.chip_value("2026-10-30T15:30:12.040Z"), "2026-10-30")
+        self.assertEqual(nt.chip_value("2026-10-30"), "2026-10-30")
+        self.assertEqual(nt.chip_value("High"), "High")
+        long = "x" * 80
+        self.assertLessEqual(len(nt.chip_value(long)), 36)
+        self.assertTrue(nt.chip_value(long).endswith("…"))
