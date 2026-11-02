@@ -39,8 +39,8 @@ in-app help say how to use it. Order below is the build order. Writes to Notion 
 ## 6. Larger or optional
 
 - [x] **A4 Page view in sections.** Chips for properties, subtask progress bar, tabs Body / Comments / Related.
-- [ ] **B5 Tab bar line.** `herdr-notion digest --bar` prints one short line for herdr's `tab_bar_right`.
-- [ ] **B7 Tidy up.** `X` closes the pane of a finished agent after a confirm; README has the keybinding snippet.
+- [x] **B5 Tab bar line.** `herdr-notion digest --bar` prints one short line for herdr's `tab_bar_right`.
+- [x] **B7 Tidy up.** `X` closes the pane of a finished agent after a confirm; README has the keybinding snippet.
 
 ## 7. Small ones
 

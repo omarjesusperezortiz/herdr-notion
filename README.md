@@ -131,6 +131,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `a` | In a wide pane, show the selected ticket's agent (its terminal, live, re-read every 2 s) in the preview instead of the ticket; `a` again goes back |
 | `A` | Agents view: every agent herdr lists with its state, how long it has been on its ticket and the ticket (delegated or attached from here, matched by ticket id, or the id written in its name). `⏎` jumps to its pane, `a` attaches it to a ticket, `r` asks herdr again, `A` or `Esc` goes back |
 | `Tab` / `1` `2` `3` (in a page) | Sections of the page view: Body, Comments (read like a conversation, `c` writes one) and Related (`j` `k` pick a linked page, `⏎` opens it, `←` comes back). Properties show as chips at the top and to-dos as a progress bar |
+| `X` | Close the pane of this ticket's finished agent (asks first; a working or blocked agent is left alone). Agents started from here get a tab named like `ET-2546 Fix login redirect` |
 | `u` | Undo the last status change (single, bulk, `>`, board move) for a minute. A toast says what happened: green for done, red for a failure (stays until a key) |
 | `p` | Show or hide the preview pane. Hidden, the table uses the whole width and `→` opens the page |
 | `-` / `=` | Fold or unfold just the selected group / all groups (`-` turns grouping on if it is off; clicking a group header does the same) |
@@ -214,6 +215,30 @@ else a quiet grey (reverse video on terminals without 256 colors). To pin a stat
 changes, new pages and edits, one line each. The first run only remembers the pages. `--tab Sprint` picks another tab
 (default: the first), `--peek` reports without moving the "last seen" point. It reads the same sign-in as the app and writes
 nothing to Notion; the last-seen state is a small `digest.json` next to your config.
+
+### In herdr's tab bar and on a key
+
+`--bar` prints one plain line (`Notion · 42 mine · 15 to be deployed · 11 to test`, plus `· 3 new` since the last digest) and never
+saves the last-seen state, so herdr can run it on a timer. In herdr's `config.toml`:
+
+```toml
+[ui]
+tab_bar_right = [
+  { type = 'command', command = 'python3 -m herdr_notion digest --bar', interval_seconds = 60, timeout_seconds = 5 },
+]
+```
+
+Run it from the plugin's folder, or give the full path to `python3 -m herdr_notion` with `cd` first. herdr adds no keybindings for plugins;
+to open the plugin on a key, add this to herdr's `config.toml` and reload (`herdr server reload-config`):
+
+```toml
+[[keys.command]]
+key = "prefix+n"
+type = "plugin_action"
+command = "herdr-notion.open-notion"
+description = "Notion tickets"
+```
+
 
 ## Tested
 

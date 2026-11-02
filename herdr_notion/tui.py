@@ -27,7 +27,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "remove the newest filter pill, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("X", "close the pane of this ticket's finished agent (asks first)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -2308,6 +2308,35 @@ class App:
         self.replace_page(updated)
         self.status_written(self.cfg["status_property"], kind, target, [(pid, before)], "%s set to %s" % (self.cfg["status_property"], target))
 
+    @staticmethod
+    def tab_label(page):
+        """The herdr tab name for an agent started on a page: its ticket id and title, like 'ET-2546 Fix login redirect'."""
+        tid = nt.page_ticket_id(page)
+        return nt.clip(("%s %s" % (tid, nt.page_title(page))).strip(), 36)
+
+    def tidy_up(self):
+        """X: close the pane of the agent on this ticket once it is done (asks first). A working agent is left alone."""
+        page = self.current()
+        ap = self.agent_pane(page)
+        if not ap:
+            self.toast("no agent is on this ticket", "info", 3)
+            return
+        pane, name = ap
+        d = self.delegations.get(page["id"], {})
+        cell = self.agent_cell(page)
+        state = nt.agent_state(d.get("status") if d else (self.found.get(page["id"]) or {}).get("status"), d.get("done"))[2]
+        if state in ("working", "needs you"):
+            self.toast("%s is %s: wait for it to finish, or close its pane in herdr" % (name, state), "info", 5)
+            return
+        if not self.confirm("Close the pane of %s (%s) for '%s'?" % (name, state, nt.clip(nt.page_title(page), 30))):
+            self.msg = "cancelled"
+            return
+        dg.close_pane(pane)
+        self.delegations.pop(page["id"], None)
+        self.found.pop(page["id"], None)
+        self.save_delegations()
+        self.toast("closed the pane of %s" % name)
+
     def delegate(self):
         page, prompt = self.build_prompt()
         if not page:
@@ -2339,7 +2368,7 @@ class App:
             return
         cwd = os.path.expanduser(os.path.expandvars(cwd))
         self.note("Starting %s…" % kinds[j]["name"])
-        pane = dg.start_agent(kinds[j]["command"], cwd, nt.page_title(page)[:30], dcfg,
+        pane = dg.start_agent(kinds[j]["command"], cwd, self.tab_label(page), dcfg,
                               os.environ.get("HERDR_WORKSPACE_ID"))
         dg.send_prompt(pane, prompt)
         self.track(page, pane, kinds[j]["name"])
@@ -2381,7 +2410,7 @@ class App:
         self.note("Creating the worktree…")
         br.create(root, name, path, base)
         self.note("Starting %s…" % kinds[j]["name"])
-        pane = dg.start_agent(kinds[j]["command"], path, nt.page_title(page)[:30], dcfg, os.environ.get("HERDR_WORKSPACE_ID"))
+        pane = dg.start_agent(kinds[j]["command"], path, self.tab_label(page), dcfg, os.environ.get("HERDR_WORKSPACE_ID"))
         dg.send_prompt(pane, "%s\n\nYou are on branch %s in %s." % (prompt, name, path))
         self.track(page, pane, kinds[j]["name"])
         self.msg = "branch %s created, %s started in %s" % (name, kinds[j]["name"], self.tilde(path))
@@ -3502,6 +3531,8 @@ class App:
             self.guard(self.undo_last)
         elif k == ord("w"):
             self.guard(self.start_branch)
+        elif k == ord("X"):
+            self.guard(self.tidy_up)
         elif k == ord("L"):
             self.guard(self.open_related)
         elif k == ord("s"):

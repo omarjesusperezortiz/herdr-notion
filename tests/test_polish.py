@@ -985,3 +985,105 @@ class ChipValue(unittest.TestCase):
         long = "x" * 80
         self.assertLessEqual(len(nt.chip_value(long)), 36)
         self.assertTrue(nt.chip_value(long).endswith("…"))
+
+
+from herdr_notion import digest
+from tests.support import CONFIG
+
+
+class BarLine(unittest.TestCase):
+    GROUPS = {"To do": "To-do", "In progress": "In progress", "Review": "In progress", "Done": "Complete"}
+
+    def pages(self):
+        return [page(0, "A", "To do"), page(1, "B", "Review"), page(2, "C", "Review"), page(3, "D", "In progress"), page(4, "E", "Done")]
+
+    def test_one_plain_line_with_the_count_and_the_two_busiest_statuses_in_progress(self):
+        line = digest.bar_line(self.pages(), CONFIG, self.GROUPS, None, "Mine")
+        self.assertEqual(line, "Notion · 5 mine · 2 review · 1 in progress")
+        self.assertNotIn("\n", line)
+
+    def test_changes_since_the_last_digest_are_counted_and_never_saved(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "digest.json")
+        pages = self.pages()
+        digest.save_snapshot(path, pages, "Status")
+        before = open(path).read()
+        pages[0]["properties"]["Status"]["status"]["name"] = "Review"
+        pages.append(page(9, "New", "To do"))
+        line = digest.bar_line(pages, CONFIG, self.GROUPS, digest.load_snapshot(path), "Mine")
+        self.assertTrue(line.endswith("· 2 new"))
+        self.assertEqual(open(path).read(), before)
+
+    def test_without_progress_statuses_it_is_just_the_count(self):
+        self.assertEqual(digest.bar_line([page(0, "A", "To do")], CONFIG, self.GROUPS, None, "All"), "Notion · 1 all")
+
+    def test_bar_is_in_the_usage_text(self):
+        import io
+        from contextlib import redirect_stdout
+        out = io.StringIO()
+        with redirect_stdout(out):
+            digest.main(["--help"])
+        self.assertIn("--bar", out.getvalue())
+
+
+class TidyUp(unittest.TestCase):
+    def app(self, status="idle", done=False):
+        app, _ = fresh()
+        app.save_delegations = lambda: None
+        app.sel = 0
+        app.delegations[app.pages[0]["id"]] = {"pane": "w1:p1", "agent": "claude", "title": "t", "status": status, "done": done,
+                                               "started": time.time()}
+        closed = []
+        self.saved = dg.close_pane
+        dg.close_pane = lambda pane: closed.append(pane)
+        self.addCleanup(lambda: setattr(dg, "close_pane", self.saved))
+        return app, closed
+
+    def test_a_finished_agent_is_closed_after_a_confirm_and_forgotten(self):
+        app, closed = self.app("idle", True)
+        app.confirm = lambda text: True
+        app.list_key(ord("X"))
+        self.assertEqual(closed, ["w1:p1"])
+        self.assertNotIn(app.pages[0]["id"], app.delegations)
+        self.assertIn("closed the pane", app.toast_state["text"])
+
+    def test_declining_closes_nothing(self):
+        app, closed = self.app("idle", True)
+        app.confirm = lambda text: False
+        app.list_key(ord("X"))
+        self.assertEqual(closed, [])
+        self.assertIn(app.pages[0]["id"], app.delegations)
+
+    def test_a_working_or_blocked_agent_is_left_alone(self):
+        for status in ("working", "blocked"):
+            app, closed = self.app(status, False)
+            app.confirm = lambda text: self.fail("asked")
+            app.list_key(ord("X"))
+            self.assertEqual(closed, [])
+            self.assertIn("wait for it", app.toast_state["text"])
+
+    def test_a_ticket_without_an_agent_says_so(self):
+        app, closed = self.app()
+        app.delegations.clear()
+        app.list_key(ord("X"))
+        self.assertEqual(app.toast_state["text"], "no agent is on this ticket")
+
+    def test_an_idle_matched_agent_can_be_closed_too(self):
+        app, closed = self.app()
+        app.delegations.clear()
+        app.found[app.pages[0]["id"]] = {"pane_id": "w9:p9", "name": "codex", "agent": "codex", "status": "idle"}
+        app.confirm = lambda text: True
+        app.list_key(ord("X"))
+        self.assertEqual(closed, ["w9:p9"])
+
+
+class TabLabel(unittest.TestCase):
+    def test_ticket_id_then_title_clipped(self):
+        from herdr_notion.tui import App
+        pg = {"properties": {"ID": {"type": "rich_text", "rich_text": [{"plain_text": "ET-2546"}]},
+                             "Name": {"type": "title", "title": [{"plain_text": "Fix login redirect"}]}}}
+        self.assertEqual(App.tab_label(pg), "ET-2546 Fix login redirect")
+        plain = {"properties": {"Name": {"type": "title", "title": [{"plain_text": "Add dark mode"}]}}}
+        self.assertEqual(App.tab_label(plain), "Add dark mode")
+        long = {"properties": {"Name": {"type": "title", "title": [{"plain_text": "x" * 80}]}}}
+        self.assertLessEqual(len(App.tab_label(long)), 36)

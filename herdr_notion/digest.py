@@ -63,6 +63,24 @@ def render(changes, tab, since, color=False):
     return lines
 
 
+def bar_line(pages, cfg, groups, old=None, tab="Notion"):
+    """One short plain line for herdr's tab bar: 'Notion · 4 mine · 2 review · 1 new'. The first number is the pages in the
+    tab, then the two statuses in progress with the most pages, then the changes since the last digest (never saved here)."""
+    prop = cfg["status_property"]
+    counts = {}
+    for p in pages:
+        name = nt.prop_text(p["properties"].get(prop))
+        if name and (nt.group_kind(groups.get(name, "")) or nt.guess_kind(name)) == "progress":
+            counts[name] = counts.get(name, 0) + 1
+    top = sorted(counts.items(), key=lambda kv: -kv[1])[:2]
+    parts = ["Notion", "%d %s" % (len(pages), tab.lower())] + ["%d %s" % (n, name.lower()) for name, n in top]
+    if old:
+        changes = len(compare(old, pages, prop))
+        if changes:
+            parts.append("%d new" % changes)
+    return " · ".join(parts)
+
+
 def pick_tab(cfg, name):
     filters = cfg["filters"]
     if not name:
@@ -101,13 +119,15 @@ def run(client, cfg, tab="", peek=False, path=None, color=False, now=None):
 def main(argv):
     args = list(argv)
     peek = "--peek" in args
+    bar = "--bar" in args
     tab = ""
     if "--tab" in args:
         i = args.index("--tab")
         tab = args[i + 1] if i + 1 < len(args) else ""
     if "-h" in args or "--help" in args:
-        print("usage: herdr-notion digest [--tab NAME] [--peek]\n"
-              "Prints what changed in the tab (default: the first) since the last digest. --peek leaves the last-seen state alone.")
+        print("usage: herdr-notion digest [--tab NAME] [--peek] [--bar]\n"
+              "Prints what changed in the tab (default: the first) since the last digest. --peek leaves the last-seen state alone.\n"
+              "--bar prints one short line for herdr's tab_bar_right (it never saves the last-seen state).")
         return 0
     from . import mcpbackend, oauth
     try:
@@ -117,6 +137,11 @@ def main(argv):
             return 1
         client = mcpbackend.McpClient(cfg["data_source_id"])
         client.want = set(cfg["columns"])
+        if bar:  # one plain line for herdr's tab bar; reads, never saves the last-seen state
+            flt = pick_tab(cfg, tab)
+            groups = nt.status_groups(client.discover(), cfg["status_property"])
+            print(bar_line(fetch(client, cfg, flt), cfg, groups, load_snapshot(snapshot_path()), flt["name"]))
+            return 0
         color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
         print("\n".join(run(client, cfg, tab, peek, color=color)))
     except (cfgmod.ConfigError, cfgmod.NeedsSetup, nt.NotionError, oauth.OAuthError) as e:

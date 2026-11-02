@@ -48,6 +48,10 @@ def read_agent(pane_id, lines=60, runner=run_text):
     return [l.rstrip() for l in text.rstrip("\n").split("\n")] if text.strip() else []
 
 
+def close_pane(pane_id, runner=run):
+    runner(["pane", "close", pane_id])
+
+
 def focus_agent(pane_id, runner=run):
     runner(["agent", "focus", pane_id])
 
