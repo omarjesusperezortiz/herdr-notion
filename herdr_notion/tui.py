@@ -24,7 +24,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "keep the preview: go in and out of it"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -43,6 +43,7 @@ class App:
         self.want_quit = False
         self.sort_mode = 0  # index into SORTS
         self.group = False  # group rows under their status
+        self.preview_on = True  # p hides the preview pane
         self.collapsed = set()  # status names whose group is folded (only while grouped)
         self.header_key = {}  # group header text -> status name, filled by build_display
         self.seen = self.load_seen()  # page id -> last edit time already looked at (for the unread dot)
@@ -476,7 +477,17 @@ class App:
     PREVIEW_MIN_WIDTH = 120
 
     def wide(self):
-        return self.scr.getmaxyx()[1] >= self.PREVIEW_MIN_WIDTH
+        """True when the preview pane is drawn: it is switched on (p) and the pane is wide enough."""
+        return self.preview_on and self.scr.getmaxyx()[1] >= self.PREVIEW_MIN_WIDTH
+
+    def toggle_preview(self):
+        """p: show or hide the preview pane. Hidden, the table gets the whole width and → opens the page."""
+        if self.scr.getmaxyx()[1] < self.PREVIEW_MIN_WIDTH:
+            self.msg = "the pane is too narrow for a preview (needs %d columns)" % self.PREVIEW_MIN_WIDTH
+            return
+        self.preview_on = not self.preview_on
+        self.focus = "list"
+        self.msg = "preview on" if self.preview_on else "preview off: p brings it back"
 
     def track_selection(self):
         """Note when the selected page changes: the preview starts at its top and waits a moment before fetching."""
@@ -736,7 +747,7 @@ class App:
         self.hits = []
         self.draw_tabs(w)
         self.draw_chips(1, w)
-        wide = w >= self.PREVIEW_MIN_WIDTH
+        wide = self.wide()
         tw_total = max(70, int(w * 0.56)) if wide else w  # width of the table; the rest is the preview pane
         # Columns right of the title, in priority order: status, other columns, edited.
         # They are dropped from the right until the title has at least 20 columns.
@@ -2198,8 +2209,8 @@ class App:
             return self.on_mouse()
         if self.focus == "preview":
             return self.preview_key(k)
-        if k == ord("p") and self.pages and self.wide():  # p: same as →, kept for people who like a letter
-            self.focus = "preview"
+        if k == ord("p"):
+            self.toggle_preview()
             return True
         if k in (curses.KEY_RIGHT, ord("l")) and self.pages:  # → goes in: into the preview, or into the page when there is none
             if self.wide():
@@ -2292,7 +2303,7 @@ class App:
     def preview_key(self, k):
         """Keys while the preview pane has the focus: scroll it; ←, Esc or Tab hand the focus back."""
         page = max(3, self.scr.getmaxyx()[0] - 8)
-        if k in (9, 27, curses.KEY_LEFT, ord("h"), ord("q"), ord("p")):
+        if k in (9, 27, curses.KEY_LEFT, ord("h"), ord("q")):
             self.focus = "list"
         elif k in (curses.KEY_DOWN, ord("j")):
             self.pscroll += 1

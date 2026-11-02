@@ -1,5 +1,6 @@
 """Tests for the UI tasks in TASKS.md, driving the real screens on a fake terminal."""
 import copy
+import curses
 import unittest
 
 from herdr_notion import notion as nt
@@ -579,11 +580,32 @@ class FoldedGroups(unittest.TestCase):
         self.assertEqual(app.collapsed, set())
 
 
-class PreviewLetter(unittest.TestCase):
-    def test_p_goes_into_the_preview_and_back(self):
-        app, _ = fresh(h=16, w=150)
+class PreviewSwitch(unittest.TestCase):
+    def test_p_hides_and_shows_the_preview_pane(self):
+        app, scr = fresh(h=16, w=150)
+        app.cache[app.pages[0]["id"]] = ["line %02d" % i for i in range(60)]
         app.draw_list()
+        self.assertTrue(app.wide())
+        self.assertTrue(scr.has("Space ▾ more"))
         app.list_key(ord("p"))
-        self.assertEqual(app.focus, "preview")
+        self.assertFalse(app.wide())
+        scr.clear() if hasattr(scr, "clear") else None
+        app.draw_list()
+        self.assertFalse(scr.has("Space ▾ more"))
         app.list_key(ord("p"))
+        self.assertTrue(app.wide())
+
+    def test_right_arrow_opens_the_page_while_the_preview_is_hidden(self):
+        app, _ = fresh(h=16, w=150)
+        opened = []
+        app.open_page = lambda page: opened.append(page["id"])
+        app.list_key(ord("p"))
+        app.list_key(curses.KEY_RIGHT)
+        self.assertEqual(opened, [app.pages[0]["id"]])
         self.assertEqual(app.focus, "list")
+
+    def test_p_on_a_narrow_pane_explains_instead_of_switching(self):
+        app, _ = fresh(h=16, w=90)
+        app.list_key(ord("p"))
+        self.assertTrue(app.preview_on)
+        self.assertIn("too narrow", app.msg)
