@@ -457,14 +457,15 @@ class Mouse(unittest.TestCase):
     def test_wheel_scrolls_the_preview_over_it_and_the_list_elsewhere(self):
         app, scr = fresh(h=14, w=150)
         app.cache[app.pages[0]["id"]] = ["line %02d" % i for i in range(60)]
+        app.wheel_gap = 0
         app.draw_list()
         self.click(app, 140, 6, "down")
-        self.assertEqual(app.pscroll, 3)
+        self.assertEqual(app.pscroll, 2)
         self.assertEqual(app.sel, 0)
         self.click(app, 140, 6, "up")
         self.assertEqual(app.pscroll, 0)
         self.click(app, 10, 6, "down")
-        self.assertEqual(app.sel, 3)
+        self.assertEqual(app.sel, 1)
         self.assertEqual(app.pscroll, 0)
 
     def test_m_toggles_the_mouse_and_says_how_to_select_text(self):

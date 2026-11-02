@@ -16,7 +16,9 @@ LEFT, RIGHT = curses.BUTTON1_PRESSED, getattr(curses, "BUTTON3_PRESSED", 0x2000)
 
 
 def fresh(**kw):
-    return make_app(copy.deepcopy(PAGES), **kw)
+    app, scr = make_app(copy.deepcopy(PAGES), **kw)
+    app.wheel_gap = 0  # tests turn the burst limit off; WheelBursts turns it back on
+    return app, scr
 
 
 def event(app, x, y, b=LEFT):
@@ -408,7 +410,7 @@ class WheelDownWorkaround(unittest.TestCase):
         app, _ = fresh(h=28, w=100)
         app.sel = 0
         self.wheel_down_by_error(app)
-        self.assertEqual(app.sel, 3)  # three rows, like any wheel notch
+        self.assertEqual(app.sel, 1)  # one row per wheel event
 
     def test_after_a_click_it_scrolls_the_pane_the_pointer_was_last_in(self):
         app, _ = fresh(h=28, w=150)
@@ -432,7 +434,7 @@ class WheelDownWorkaround(unittest.TestCase):
         app.detail = {"page": app.pages[0], "lines": [], "body": "x\n" * 100}
         app.dscroll = 0
         self.wheel_down_by_error(app)
-        self.assertEqual(app.dscroll, 3)
+        self.assertEqual(app.dscroll, 2)
 
     def test_a_popup_moves_down_on_it(self):
         app, _ = fresh(h=30, w=100)
@@ -449,3 +451,36 @@ class WheelDownWorkaround(unittest.TestCase):
         with mock.patch("curses.newwin", lambda *a: Win(*a)), mock.patch("curses.getmouse", side_effect=curses.error("no event")):
             got = app.popup("Pick", ["One", "Two", "Three"])
         self.assertEqual(got, 1)
+
+
+class WheelBursts(unittest.TestCase):
+    """A trackpad swipe sends dozens of wheel events; the list used to fly to the end."""
+
+    def test_events_inside_the_gap_are_ignored(self):
+        app, _ = fresh(h=28, w=100)
+        app.wheel_gap = 3600  # nothing after the first counts
+        for _ in range(30):
+            event(app, 5, 5, app.WHEEL_DOWN)
+        self.assertEqual(app.sel, 1)
+
+    def test_a_burst_moves_a_few_rows_not_thirty(self):
+        app, _ = fresh(h=28, w=100)
+        app.wheel_gap = 0.04
+        t = [1000.0]
+        with mock.patch("time.time", lambda: t[0]):
+            for _ in range(60):  # 60 events in 0.3 s
+                t[0] += 0.005
+                event(app, 5, 5, app.WHEEL_DOWN)
+        self.assertLessEqual(app.sel, len(app.pages) - 1)
+        self.assertLessEqual(app.sel, 8)
+        self.assertGreaterEqual(app.sel, 1)
+
+    def test_a_slow_wheel_moves_one_row_per_notch(self):
+        app, _ = fresh(h=28, w=100)
+        app.wheel_gap = 0.04
+        t = [1000.0]
+        with mock.patch("time.time", lambda: t[0]):
+            for _ in range(3):
+                t[0] += 0.2
+                event(app, 5, 5, app.WHEEL_DOWN)
+        self.assertEqual(app.sel, 3)

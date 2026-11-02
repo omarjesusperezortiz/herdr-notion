@@ -54,6 +54,7 @@ class App:
         self.sort_rev = False  # a second click on a column header reverses the order
         self.mark_anchor = None  # id of the page last marked with a click (a Shift/Alt click extends from it)
         self.drag = None  # (column, card) a board drag started on
+        self.last_wheel, self.wheel_gap = 0.0, 0.04  # a trackpad swipe sends dozens of wheel events: take one per gap
         self.pointer = None  # where the mouse last was (x, y), for a wheel turn the terminal library cannot place
         self.seen = self.load_seen()  # page id -> last edit time already looked at (for the unread dot)
         self.last_refresh = time.time()
@@ -169,21 +170,22 @@ class App:
             return True
         x, y, b = ev
         w, h = self.scr.getmaxyx()[1], self.scr.getmaxyx()[0]
-        wheel = -3 if b & self.WHEEL_UP else 3 if b & self.WHEEL_DOWN else 0
+        raw = -1 if b & self.WHEEL_UP else 1 if b & self.WHEEL_DOWN else 0
+        wheel = self.wheel_delta(raw) if raw else 0
         if self.detail:
-            if wheel:
-                self.dscroll = max(0, self.dscroll + wheel)
+            if raw:
+                self.dscroll = max(0, self.dscroll + 2 * wheel)
             elif b & curses.BUTTON1_PRESSED:
                 hit = self.hit_at(x, y)
                 if hit and hit[3] == "key" and self.hint_key(hit[4]) is not None:
                     return self.send_key(self.hint_key(hit[4]))
             return True
         if self.board:
-            return self.board_mouse(x, y, b, wheel)
-        if wheel:
+            return self.board_mouse(x, y, b, raw)
+        if raw:
             tw = max(70, int(w * 0.56))
             if self.wide() and x > tw:
-                self.pscroll = max(0, self.pscroll + wheel)
+                self.pscroll = max(0, self.pscroll + 2 * wheel)
             elif self.pages:
                 self.sel, self.hdr = max(0, min(len(self.pages) - 1, self.sel + wheel)), None
             return True
@@ -226,6 +228,15 @@ class App:
             if again:
                 self.guard(self.open_page, self.pages[arg])
         return True
+
+    def wheel_delta(self, direction):
+        """+1 or -1 for a wheel event worth acting on, 0 for one that comes right after the previous (trackpads and
+        smooth-scroll wheels send bursts, and acting on every event made the list fly)."""
+        now = time.time()
+        if now - self.last_wheel < self.wheel_gap:
+            return 0
+        self.last_wheel = now
+        return 1 if direction > 0 else -1
 
     def hit_at(self, x, y):
         return next((h for h in self.hits if h[0] == y and h[1] <= x < h[2]), None)
@@ -1197,8 +1208,9 @@ class App:
         its status, right click for the menu, wheel moves between cards."""
         cols = self.board_columns()
         if wheel:
-            if cols:
-                self.brow = max(0, min(len(cols[self.bcol][1]) - 1, self.brow + (1 if wheel > 0 else -1)))
+            d = self.wheel_delta(wheel)
+            if cols and d:
+                self.brow = max(0, min(len(cols[self.bcol][1]) - 1, self.brow + d))
             return True
         if b & self.RELEASE and not b & curses.BUTTON1_PRESSED:
             start, self.drag = self.drag, None
@@ -1366,9 +1378,9 @@ class App:
                 mx, my, b = ev
                 inside = y0 <= my < y0 + bh and x0 <= mx < x0 + bw
                 if b & self.WHEEL_UP:
-                    sel = max(sel - 1, 0)
+                    sel = max(sel + min(self.wheel_delta(-1), 0), 0)
                 elif b & self.WHEEL_DOWN:
-                    sel = min(sel + 1, len(items) - 1)
+                    sel = min(sel + max(self.wheel_delta(1), 0), len(items) - 1)
                 elif b & (curses.BUTTON1_PRESSED | self.RIGHT_CLICK):
                     if inside and y0 < my < y0 + bh - 1:
                         return first + (my - y0 - 1)
@@ -2656,9 +2668,9 @@ class App:
                     mx, my, b = ev
                     y0, x0 = (h - bh) // 2, (w - bw) // 2
                     if b & self.WHEEL_UP:
-                        top = max(0, top - 3)
+                        top = max(0, top + 2 * min(self.wheel_delta(-1), 0))
                     elif b & self.WHEEL_DOWN:
-                        top = min(max(0, len(rows) - room), top + 3)
+                        top = min(max(0, len(rows) - room), top + 2 * max(self.wheel_delta(1), 0))
                     elif b & curses.BUTTON1_PRESSED and not (y0 <= my < y0 + bh and x0 <= mx < x0 + bw):
                         return
                 continue

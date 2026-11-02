@@ -180,7 +180,7 @@ Reload herdr's config after changing it. Right click may be kept by herdr for it
 | right click on a row or card | a menu of the usual actions, each with its key |
 | inside any popup | click an item to pick it, the wheel moves, a click outside cancels |
 | a board card | selects it (twice opens it); drag it onto another column to change its status, after a confirm |
-| the wheel | scrolls the pane under the pointer (on macOS system Python the terminal library cannot say where the wheel turned down, so down uses the last pointer position) |
+| the wheel | scrolls the pane under the pointer: one row per notch in the list, two lines in the preview and the page. A trackpad swipe sends dozens of events, so at most one counts every 40 ms (on macOS system Python the terminal library cannot say where the wheel turned down, so down uses the last pointer position) |
 
 ## Digest
 
