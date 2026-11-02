@@ -55,6 +55,7 @@ class App:
         self.mark_anchor = None  # id of the page last marked with a click (a Shift/Alt click extends from it)
         self.drag = None  # (column, card) a board drag started on
         self.last_wheel, self.wheel_gap = 0.0, 0.04  # a trackpad swipe sends dozens of wheel events: take one per gap
+        self.right_pending = None  # (x, y, time) of a right-button press that has not been released yet
         self.pointer = None  # where the mouse last was (x, y), for a wheel turn the terminal library cannot place
         self.seen = self.load_seen()  # page id -> last edit time already looked at (for the unread dot)
         self.last_refresh = time.time()
@@ -114,6 +115,7 @@ class App:
     WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0x200000)  # ncurses 6 reports the wheel down as button 5
     RIGHT_CLICK = getattr(curses, "BUTTON3_PRESSED", 0x2000)
     RELEASE = getattr(curses, "BUTTON1_RELEASED", 1)
+    RIGHT_RELEASE = getattr(curses, "BUTTON3_RELEASED", 0x1000)
     MODIFIERS = getattr(curses, "BUTTON_SHIFT", 0x2000000) | getattr(curses, "BUTTON_ALT", 0x4000000)  # held while clicking
 
     def set_mouse(self, on):
@@ -121,8 +123,8 @@ class App:
         Cmd-click opens no links; Option (macOS Terminal, iTerm) or Shift (most others) gives that back."""
         self.mouse_on = bool(on)
         try:
-            curses.mousemask(curses.BUTTON1_PRESSED | self.RELEASE | self.RIGHT_CLICK | self.WHEEL_UP | self.WHEEL_DOWN
-                             | self.MODIFIERS if on else 0)
+            curses.mousemask(curses.BUTTON1_PRESSED | self.RELEASE | self.RIGHT_CLICK | self.RIGHT_RELEASE
+                             | self.WHEEL_UP | self.WHEEL_DOWN | self.MODIFIERS if on else 0)
             curses.mouseinterval(0)
         except curses.error:
             self.mouse_on = False
@@ -170,6 +172,24 @@ class App:
             return True
         x, y, b = ev
         w, h = self.scr.getmaxyx()[1], self.scr.getmaxyx()[0]
+        # ncurses 6.0 decodes a horizontal wheel turn as a right-button event: left is the press (0x2000), right is
+        # the release (0x1000). A real right click is exactly one press followed soon by one release; a swipe is a
+        # run of presses or releases. So the menu opens on a release that follows a single press, and a swipe opens nothing.
+        now = time.time()
+        if b & self.RIGHT_CLICK and not b & curses.BUTTON1_PRESSED:
+            if self.right_pending and now - self.right_pending[2] < 1.0:
+                self.right_pending = (x, y, now, self.right_pending[3] + 1)
+            else:
+                self.right_pending = (x, y, now, 1)
+            return True
+        if b & self.RIGHT_RELEASE and not b & (curses.BUTTON1_PRESSED | self.RIGHT_CLICK):
+            pend, self.right_pending = self.right_pending, None
+            if pend and pend[3] == 1 and now - pend[2] < 1.0:
+                x, y, b = pend[0], pend[1], self.RIGHT_CLICK
+            else:
+                return True
+        elif not b & self.RELEASE:
+            self.right_pending = None
         raw = -1 if b & self.WHEEL_UP else 1 if b & self.WHEEL_DOWN else 0
         wheel = self.wheel_delta(raw) if raw else 0
         if self.detail:
@@ -1381,7 +1401,7 @@ class App:
                     sel = max(sel + min(self.wheel_delta(-1), 0), 0)
                 elif b & self.WHEEL_DOWN:
                     sel = min(sel + max(self.wheel_delta(1), 0), len(items) - 1)
-                elif b & (curses.BUTTON1_PRESSED | self.RIGHT_CLICK):
+                elif b & curses.BUTTON1_PRESSED:
                     if inside and y0 < my < y0 + bh - 1:
                         return first + (my - y0 - 1)
                     if not inside:

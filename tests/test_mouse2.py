@@ -26,6 +26,12 @@ def event(app, x, y, b=LEFT):
         return app.send_key(curses.KEY_MOUSE)
 
 
+def right_click(app, x, y):
+    """A real right click: the press, then the release."""
+    event(app, x, y, RIGHT)
+    return event(app, x, y, app.RIGHT_RELEASE)
+
+
 def find(app, action, pred=lambda arg: True):
     h = next(h for h in app.hits if h[3] == action and pred(h[4]))
     return h[1], h[0]
@@ -292,7 +298,7 @@ class ContextMenu(unittest.TestCase):
         app.draw_list()
         seen = {}
         app.popup = lambda title, items, start=0, at=None: seen.update(items=items, at=at) or None
-        event(app, 12, 6, RIGHT)
+        right_click(app, 12, 6)
         self.assertEqual(app.sel, 3)
         self.assertEqual(seen["at"], (6, 12))
         self.assertIn("Change status", seen["items"][1])
@@ -303,14 +309,14 @@ class ContextMenu(unittest.TestCase):
         called = []
         app.change_status = lambda: called.append("status")
         app.popup = lambda title, items, start=0, at=None: 1
-        event(app, 12, 6, RIGHT)
+        right_click(app, 12, 6)
         self.assertEqual(called, ["status"])
 
     def test_right_click_on_empty_space_does_nothing(self):
         app, _ = fresh(h=28, w=100)
         app.draw_list()
         app.popup = lambda *a, **k: self.fail("menu opened")
-        event(app, 12, 22, RIGHT)
+        right_click(app, 12, 22)
 
 
 class BoardDrag(unittest.TestCase):
@@ -371,7 +377,7 @@ class BoardDrag(unittest.TestCase):
         x, y = self.card(app, 0, 1)
         seen = []
         app.popup = lambda title, items, start=0, at=None: seen.append(at) or None
-        event(app, x, y, RIGHT)
+        right_click(app, x, y)
         self.assertEqual(seen, [(y, x)])
         self.assertEqual((app.bcol, app.brow), (0, 1))
 
@@ -395,7 +401,7 @@ class MouseMask(unittest.TestCase):
         with mock.patch("curses.mousemask") as mm, mock.patch("curses.mouseinterval"):
             app.set_mouse(True)
         mask = mm.call_args[0][0]
-        for bit in (curses.BUTTON1_PRESSED, app.RELEASE, app.RIGHT_CLICK, app.WHEEL_UP, app.WHEEL_DOWN, app.MODIFIERS):
+        for bit in (curses.BUTTON1_PRESSED, app.RELEASE, app.RIGHT_CLICK, app.RIGHT_RELEASE, app.WHEEL_UP, app.WHEEL_DOWN, app.MODIFIERS):
             self.assertTrue(mask & bit)
 
 
@@ -483,4 +489,63 @@ class WheelBursts(unittest.TestCase):
             for _ in range(3):
                 t[0] += 0.2
                 event(app, 5, 5, app.WHEEL_DOWN)
+        self.assertEqual(app.sel, 3)
+
+
+class HorizontalScroll(unittest.TestCase):
+    """ncurses 6.0 reports a sideways wheel turn as a right-button press (and never a release)."""
+
+    def test_a_sideways_swipe_opens_no_menu(self):
+        app, _ = fresh(h=28, w=100)
+        app.draw_list()
+        app.popup = lambda *a, **k: self.fail("menu opened by a horizontal scroll")
+        for _ in range(20):
+            event(app, 12, 6, RIGHT)  # press after press, no release
+        self.assertEqual(app.sel, 0)
+
+    def test_a_left_click_after_a_swipe_does_not_open_a_menu(self):
+        app, _ = fresh(h=28, w=100)
+        app.draw_list()
+        app.popup = lambda *a, **k: self.fail("menu opened")
+        event(app, 12, 6, RIGHT)
+        event(app, 12, 6, curses.BUTTON1_PRESSED)
+        event(app, 12, 6, app.RIGHT_RELEASE)
+
+    def test_a_release_long_after_the_press_is_not_a_right_click(self):
+        app, _ = fresh(h=28, w=100)
+        app.draw_list()
+        app.popup = lambda *a, **k: self.fail("menu opened")
+        t = [1000.0]
+        with mock.patch("time.time", lambda: t[0]):
+            event(app, 12, 6, RIGHT)
+            t[0] += 5
+            event(app, 12, 6, app.RIGHT_RELEASE)
+
+    def test_a_sideways_swipe_in_a_popup_picks_nothing(self):
+        app, _ = fresh(h=30, w=100)
+        got, _ = run_popup(app, ["One", "Two"], [(curses.KEY_MOUSE, (50, 15, RIGHT)), (curses.KEY_MOUSE, (50, 15, RIGHT)), (27, None)])
+        self.assertIsNone(got)  # only Esc ended it
+
+    def test_a_swipe_left_then_right_does_not_open_a_menu(self):
+        app, _ = fresh(h=28, w=100)
+        app.draw_list()
+        app.popup = lambda *a, **k: self.fail("menu opened")
+        for _ in range(5):
+            event(app, 12, 6, RIGHT)            # swipe left: presses
+        event(app, 12, 6, app.RIGHT_RELEASE)    # then swipe right: releases (the same bits as a right-button release)
+        event(app, 12, 6, app.RIGHT_RELEASE)
+
+    def test_one_press_and_one_release_is_a_right_click(self):
+        app, _ = fresh(h=28, w=100)
+        app.draw_list()
+        seen = []
+        app.popup = lambda title, items, start=0, at=None: seen.append(at) or None
+        right_click(app, 12, 6)
+        self.assertEqual(seen, [(6, 12)])
+
+    def test_a_right_click_does_not_move_the_wheel_or_select_twice(self):
+        app, _ = fresh(h=28, w=100)
+        app.draw_list()
+        app.popup = lambda *a, **k: None
+        right_click(app, 12, 6)
         self.assertEqual(app.sel, 3)

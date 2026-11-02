@@ -177,7 +177,7 @@ Reload herdr's config after changing it. Right click may be kept by herdr for it
 | `TITLE`, `STATUS`, `EDITED` | sorts by it; a second click reverses it (▼ ▲ shows the order) |
 | a tab, a status chip, a group header | switches, filters, folds |
 | a hint in the footer | does what its key does (`s status`, `B board`, `? more`) |
-| right click on a row or card | a menu of the usual actions, each with its key |
+| right click on a row or card | a menu of the usual actions, each with its key (it opens on release, so a sideways trackpad swipe, which looks like a right button to the terminal library, opens nothing) |
 | inside any popup | click an item to pick it, the wheel moves, a click outside cancels |
 | a board card | selects it (twice opens it); drag it onto another column to change its status, after a confirm |
 | the wheel | scrolls the pane under the pointer: one row per notch in the list, two lines in the preview and the page. A trackpad swipe sends dozens of events, so at most one counts every 40 ms (on macOS system Python the terminal library cannot say where the wheel turned down, so down uses the last pointer position) |
