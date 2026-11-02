@@ -16,9 +16,9 @@ in-app help say how to use it. Order below is the build order. Writes to Notion 
 
 ## 2. Filters and messages
 
-- [ ] **A1 Filter bar.** Pills under the tabs for tab, status, quick filter and search, each removable; `Esc` clears the last.
-- [ ] **A2 Toasts with undo.** Colored messages that live a few seconds, failures stay until a key; `u` undoes the last status change.
-  The confirm before every write stays.
+- [x] **A1 Filter bar.** Pills under the tabs for tab, status, quick filter and search, each removable; `Esc` clears the last.
+- [x] **A2 Toasts with undo.** Colored messages that live a few seconds, failures stay until a key; `u` undoes the last status change.
+  The confirm before every write stays; `u` is its own explicit key and the toast names what it undoes.
 
 ## 3. Speed and memory
 

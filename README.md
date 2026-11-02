@@ -113,7 +113,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `Enter` | open page (properties + body as plain text) |
 | `Tab` / `Shift-Tab`, `f`, `1`-`9` | next / previous tab, pick a tab, jump to a tab |
 | `/` | type to narrow the loaded pages at once; Enter also searches the whole database (a view only narrows) |
-| Esc | clears the search and the status filter; quits when nothing is left to clear |
+| Esc | takes the filters off one at a time, newest first (they show as pills under the chips, each with an ×; a click on the × removes it); quits when none is left |
 | `[` / `]`, `0` | move along the status chips under the tabs (every status of the property, with its count; `+` means more pages exist), `0` shows every status. With more pages than are loaded, a chosen status is asked of Notion |
 | `F` | pick one status to show (among the loaded pages) |
 | `+` / `T` | save the current tab + status + search as a new tab / manage tabs (rename, move, delete), written to `config.toml` |
@@ -126,7 +126,8 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `B` | Board: a column per status. `h` `l` change column, `j` `k` card, `H` `L` move the card to the next status (asks first), `⏎` opens it, `B` or `Esc` goes back to the list |
 | `L` | Open a page linked from this one (a relation property); `←` comes back. The preview and the page show `☑ 2/3 subtasks · ↗ 2 related` when there are to-dos or links |
 | `w` | New git worktree and branch for the ticket (named like `et-2546-fix-login-redirect`, from `main` when it exists), then an agent starts inside it with the ticket as the prompt. Asks for the repository, the branch name and a confirm. Your current checkout is not touched. `branch_prefix = "feat/"` under `[delegate]` adds a prefix |
-| `Q` | Quick filter on what is loaded: changed today or this week, unread, no assignee, due this week. `Esc` clears it |
+| `Q` | Quick filter on what is loaded: changed today or this week, unread, no assignee, due this week. It shows as a pill; `Esc` removes it |
+| `u` | Undo the last status change (single, bulk, `>`, board move) for a minute. A toast says what happened: green for done, red for a failure (stays until a key) |
 | `p` | Show or hide the preview pane. Hidden, the table uses the whole width and `→` opens the page |
 | `-` / `=` | Fold or unfold just the selected group / all groups (`-` turns grouping on if it is off; clicking a group header does the same) |
 | `→` / `←` | `→` goes into the preview (↑↓, PgUp/PgDn, `g`/`G` scroll it) or opens the page when the pane has no preview; `←` comes back. Space and `b` scroll the preview without going in |

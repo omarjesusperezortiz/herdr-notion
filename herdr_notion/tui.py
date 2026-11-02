@@ -26,8 +26,8 @@ from . import tomlcompat
 HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
-                  ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+                  ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "remove the newest filter pill, then quit"), ("q", "quit")]),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("u", "undo the last status change (for a minute)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -85,6 +85,9 @@ class App:
         self.compact = False  # z: bar only, no status column (the table shows the status word on every row)
         self.hits = []  # clickable regions of the last drawing: (y, x0, x1, action, argument)
         self.focus = "list"  # "preview" while the arrow keys scroll the preview pane
+        self.colors, self.pairs, self.sel_bg = False, {}, False  # filled by init_colors
+        self.toast_state = None  # {text, kind, until}: the message in the footer, with a color and a life
+        self.undo = None  # the last status write(s), for u
         self.option_colors = {}  # property -> {option name: Notion color name}
         self.status_colors, self.status_glyphs = {}, {}  # status name -> color role / glyph (palette.status_colors)
         self.status_order = {}  # status name -> position (the order of the options in Notion, or group_order)
@@ -233,6 +236,8 @@ class App:
             self.guard(self.set_status_filter, arg)
         elif action == "group":
             self.toggle_group(arg)
+        elif action == "pill":
+            self.remove_pill(arg)
         elif action == "key":
             code = self.hint_key(arg)
             if code is not None:
@@ -317,6 +322,42 @@ class App:
         self.scr.addnstr(h // 2, 2, text, w - 4)
         self.scr.refresh()
 
+    TOAST_SECONDS = 8.0
+    UNDO_SECONDS = 60.0
+
+    def toast(self, text, kind="ok", ttl=None):
+        """A message in the footer with a color: green for done, red for a failure (it stays until a key is pressed)."""
+        self.toast_state = {"text": text, "kind": kind, "until": time.time() + (ttl or (30.0 if kind == "err" else self.TOAST_SECONDS))}
+
+    def live_toast(self):
+        t = self.toast_state
+        if t and time.time() >= t["until"]:
+            self.toast_state = t = None
+        return t
+
+    def status_written(self, prop, kind, new, items, text):
+        """After a status write: remember how to take it back (items = [(page id, old status)]) and say so."""
+        items = [(pid, old) for pid, old in items if old]
+        self.undo = {"items": items, "prop": prop, "kind": kind, "new": new, "until": time.time() + self.UNDO_SECONDS} if items else None
+        self.toast(text + (" · u undo" if items else ""))
+
+    def undo_last(self):
+        """u: put the status of the last write back. It is its own explicit key, and the toast named what it would do."""
+        u = self.undo
+        if not u or time.time() > u["until"]:
+            self.undo = None
+            self.toast("nothing to undo", "info", 3)
+            return
+        self.undo = None
+        self.note("Undoing…")
+        for pid, old in u["items"]:
+            updated = self.client.set_status(pid, u["prop"], u["kind"], old)
+            self.replace_page(updated)
+            if self.detail and self.detail["page"]["id"] == pid:
+                self.open_page(updated)
+        back = u["items"][0][1] if len({o for _, o in u["items"]}) == 1 else "what it was"
+        self.toast("undone: %d page%s back to %s" % (len(u["items"]), "" if len(u["items"]) == 1 else "s", back))
+
     def note(self, text):
         """Show `text` in the footer over the screen as it is, without blanking it, then keep working."""
         self.msg = text
@@ -333,6 +374,7 @@ class App:
 
     def report(self, e):
         self.msg = str(e)
+        self.toast(self.msg, "err")
         if "Could not find" in self.msg:  # the account cannot see the configured database
             self.msg = "This token cannot see the configured database."
         if self.connection_problem(self.msg):
@@ -1046,6 +1088,11 @@ class App:
         self.hits = []
         self.draw_tabs(w)
         self.draw_chips(1, w)
+        pills = self.filter_pills()
+        po = 1 if pills else 0  # a row of removable filter pills pushes the table down by one
+        if pills:
+            self.draw_pills(2, w, pills)
+        hy, y0 = 2 + po, 3 + po
         wide = self.wide()
         tw_total = max(70, int(w * 0.56)) if wide else w  # width of the table; the rest is the preview pane
         # Columns right of the title, in priority order: status, other columns, edited.
@@ -1059,14 +1106,14 @@ class App:
         arrow = {"TITLE": "title", "STATUS": "status", "EDITED": "edited"}  # header -> sort column; clicking sorts
         labels = [("TITLE", "TITLE" + self.sort_arrow("title"), tw)] + [(n, n + (self.sort_arrow(arrow[n]) if n in arrow else ""), cw) for n, cw in cols]
         head = "  " + "".join(lab.ljust(wd) + "  " for _, lab, wd in labels)
-        self.scr.addnstr(2, 0, head.rstrip(), tw_total - 1, curses.A_DIM | curses.A_BOLD)
+        self.scr.addnstr(hy, 0, head.rstrip(), tw_total - 1, curses.A_DIM | curses.A_BOLD)
         hx = 2
         for n, lab, wd in labels:
             if n in arrow:
-                self.hits.append((2, hx, hx + wd, "sort", arrow[n]))
+                self.hits.append((hy, hx, hx + wd, "sort", arrow[n]))
             hx += wd + 2
         peek = 4 if (h >= 20 and not wide) else 0  # the selected page in full, since titles get clipped in the table
-        rows = h - 6 - peek
+        rows = h - 6 - peek - po
         disp = self.build_display()
         if self.hdr and self.hdr not in self.header_key.values():
             self.hdr = None
@@ -1077,7 +1124,7 @@ class App:
             self.top = sel_d - rows + 1
         stale = bool(self.job and self.job["kind"] == "list" and self.pages)
         for r, (kind, i) in enumerate(disp[self.top:self.top + rows]):
-            y = 3 + r
+            y = y0 + r
             if kind == "h":
                 fold = "▸ " if self.header_key.get(i) in self.collapsed else "▾ "
                 on_h = self.hdr is not None and self.header_key.get(i) == self.hdr
@@ -1129,14 +1176,14 @@ class App:
         if not self.pages and self.job:
             for r in range(min(rows, 8)):  # skeleton rows while the first page loads
                 bar = "░" * (14 + (r * 7) % 17)
-                self.scr.addnstr(3 + r, 2, bar, tw, curses.A_DIM)
-                self.scr.addnstr(3 + r, 2 + tw + 2, "░░░░░░░░", 8, curses.A_DIM)
+                self.scr.addnstr(y0 + r, 2, bar, tw, curses.A_DIM)
+                self.scr.addnstr(y0 + r, 2 + tw + 2, "░░░░░░░░", 8, curses.A_DIM)
         elif not self.pages:
-            self.scr.addnstr(4, 2, "No pages match this filter.", tw_total - 3, curses.A_DIM)
+            self.scr.addnstr(y0 + 1, 2, "No pages match this filter.", tw_total - 3, curses.A_DIM)
         if wide:
-            for y in range(2, h - 3):
+            for y in range(hy, h - 3):
                 self.scr.addnstr(y, tw_total, "┃" if self.focus == "preview" else "│", 1, self.cp(2) | curses.A_BOLD if self.focus == "preview" else curses.A_DIM)
-            self.draw_preview(tw_total + 2, w - tw_total - 3, 3, h - 3)
+            self.draw_preview(tw_total + 2, w - tw_total - 3, y0, h - 3)
         if peek and self.pages and not self.hdr:
             self.rule(h - 3 - peek, w)
             p = self.pages[self.sel]
@@ -1339,12 +1386,13 @@ class App:
             self.msg = "cancelled"
             return
         self.note("Updating…")
+        old = nt.prop_text(page["properties"].get(prop))
         self.replace_page(self.client.set_status(page["id"], prop, kind, name))
         cols = self.board_columns()  # follow the card to its new column
         self.bcol = next((ci for ci, (n, _) in enumerate(cols) if n == name), self.bcol)
         idxs = cols[self.bcol][1]
         self.brow = next((r for r, j in enumerate(idxs) if self.pages[j]["id"] == page["id"]), 0)
-        self.msg = "%s set to %s" % (prop, name)
+        self.status_written(prop, kind, name, [(page["id"], old)], "%s set to %s" % (prop, name))
 
     def draw_detail(self):
         h, w = self.scr.getmaxyx()
@@ -1406,7 +1454,13 @@ class App:
             ctx = ""
             parts = nt.fit_hint_parts(hints, w - 2)
         note = "%s %s" % (self.spin(), self.job["label"]) if self.visible_job() else self.msg
-        if note:
+        t = self.live_toast()
+        if t and not self.visible_job():
+            mark = {"ok": "✓ ", "err": "✕ ", "info": ""}.get(t["kind"], "")
+            self.scr.addnstr(h - 2, 1, mark + t["text"], w - 2,
+                             curses.A_BOLD | (self.paint("green") if t["kind"] == "ok" else self.paint("red") if t["kind"] == "err" else 0))
+            hint_row = h - 1
+        elif note:
             self.scr.addnstr(h - 2, 1, note, w - 2, curses.A_BOLD if not self.job else curses.A_DIM)
             hint_row = h - 1
         else:
@@ -1553,20 +1607,22 @@ class App:
             self.msg = "cancelled"
             return
         if marked:
-            done = 0
+            done, olds = 0, []
             for n, p in enumerate(marked):
                 self.note("Updating %d of %d…" % (n + 1, len(marked)))
+                olds.append((p["id"], nt.prop_text(p["properties"].get(prop))))
                 self.replace_page(self.client.set_status(p["id"], prop, kind, options[i]))
                 self.marked.discard(p["id"])
                 done += 1
-            self.msg = "%s set to %s on %d page%s" % (prop, options[i], done, "" if done == 1 else "s")
+            self.status_written(prop, kind, options[i], olds, "%s set to %s on %d page%s" % (prop, options[i], done, "" if done == 1 else "s"))
             return
+        old = nt.prop_text(page["properties"].get(prop))
         self.note("Updating…")
         updated = self.client.set_status(page["id"], prop, kind, options[i])
         self.replace_page(updated)
         if self.detail:
             self.open_page(updated)
-        self.msg = "%s set to %s · press d to delegate it" % (prop, options[i])
+        self.status_written(prop, kind, options[i], [(page["id"], old)], "%s set to %s" % (prop, options[i]))
 
     def advance_status(self):
         """>: move the current page to the next status of the property (To do, In progress, Done…)."""
@@ -1589,7 +1645,7 @@ class App:
         self.replace_page(updated)
         if self.detail:
             self.open_page(updated)
-        self.msg = "%s: %s → %s" % (nt.page_title(page)[:30], now or "none", options[i])
+        self.status_written(prop, kind, options[i], [(page["id"], now)], "%s: %s → %s" % (nt.page_title(page)[:30], now or "none", options[i]))
 
     def toggle_mark(self):
         """x: mark or unmark the current page for a bulk status change, then move down."""
@@ -1865,10 +1921,11 @@ class App:
             target = options[i]
         elif not self.confirm("%s finished '%s'. Set %s to '%s'?" % (d["agent"], nt.clip(d["title"], 30), self.cfg["status_property"], target)):
             return
-        self.busy("Updating…")
+        self.note("Updating…")
+        before = next((nt.prop_text(p["properties"].get(self.cfg["status_property"])) for p in self.all if p["id"] == pid), "")
         updated = self.client.set_status(pid, self.cfg["status_property"], kind, target)
         self.replace_page(updated)
-        self.msg = "%s set to %s" % (self.cfg["status_property"], target)
+        self.status_written(self.cfg["status_property"], kind, target, [(pid, before)], "%s set to %s" % (self.cfg["status_property"], target))
 
     def delegate(self):
         page, prompt = self.build_prompt()
@@ -2467,6 +2524,44 @@ class App:
         if i is not None:
             self.list_key(ord(self.PALETTE[i][1]))
 
+    def filter_pills(self):
+        """[(kind, label)] for what narrows the list besides the tab, in the order Esc removes them (last first)."""
+        pills = []
+        if self.status_filter:
+            pills.append(("status", self.status_filter))
+        if self.quick:
+            pills.append(("quick", dict(self.QUICK)[self.quick].lower()))
+        text = self.query or self.live
+        if text:
+            pills.append(("search", "“%s”" % text))
+        return pills
+
+    def draw_pills(self, y, w, pills):
+        x = 1
+        for kind, label in pills:
+            text = " %s × " % label
+            if x + len(text) >= w - 2:
+                break
+            self.scr.addnstr(y, x, text, len(text), self.paint("accent") | curses.A_REVERSE | curses.A_BOLD)
+            self.hits.append((y, x, x + len(text), "pill", kind))
+            x += len(text) + 1
+        if x + 24 < w:
+            self.scr.addnstr(y, x + 1, "Esc removes the last", 20, curses.A_DIM)
+
+    def remove_pill(self, kind):
+        """Take one narrowing off the list (a click on its ×, or Esc for the last one)."""
+        if kind == "status":
+            self.set_status_filter("")
+        elif kind == "quick":
+            self.quick = ""
+            self.refilter()
+        elif kind == "search":
+            had_query = bool(self.query)
+            self.live = self.query = ""
+            self.refilter()
+            if had_query:
+                self.refresh_async("Loading…")
+
     def clear_filters(self):
         """Esc: drop the status filter and the search before quitting."""
         had_query = bool(self.query) or self.server_status
@@ -2842,6 +2937,8 @@ class App:
             k = self.scr.getch()
             if k == -1 or k == curses.KEY_RESIZE:
                 continue
+            if self.toast_state and self.toast_state["kind"] == "err" and k != curses.KEY_MOUSE:
+                self.toast_state = None  # a failure stays until you press a key
             self.scr.timeout(-1)  # handlers below (popups, confirm, ask) read keys in blocking mode
             if self.detail:
                 if not self.detail_key(k):
@@ -2869,7 +2966,9 @@ class App:
         self.open_page(target)
 
     def common_key(self, k):
-        if k == ord("w"):
+        if k == ord("u"):
+            self.guard(self.undo_last)
+        elif k == ord("w"):
             self.guard(self.start_branch)
         elif k == ord("L"):
             self.guard(self.open_related)
@@ -2925,8 +3024,10 @@ class App:
             self.marked.clear()
             self.msg = "marks cleared"
             return True
-        if k == 27 and (self.query or self.live or self.status_filter or self.quick):
-            self.clear_filters()
+        if k == 27 and self.filter_pills():  # Esc takes the filters off one at a time, the newest first
+            kind, label = self.filter_pills()[-1]
+            self.remove_pill(kind)
+            self.msg = "removed %s" % label
             return True
         if k in (ord("q"), 27):
             return False

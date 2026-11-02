@@ -326,7 +326,7 @@ class BulkAndAdvance(unittest.TestCase):
         self.assertEqual({w[2] for w in app.client.writes}, {"Done"})
         self.assertEqual(len([a for a in asked if "3 pages" in a]), 2)  # popup title and the one confirm
         self.assertEqual(app.marked, set())
-        self.assertIn("3 pages", app.msg)
+        self.assertIn("3 pages", app.toast_state["text"])
 
     def test_declining_the_bulk_confirm_writes_nothing_and_keeps_the_marks(self):
         app, scr = self.app(confirm=False)
