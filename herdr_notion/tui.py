@@ -148,6 +148,9 @@ class App:
             return True
         hit = next((h for h in self.hits if h[0] == y and h[1] <= x < h[2]), None)
         if not hit:
+            h_ = self.scr.getmaxyx()[0]
+            if self.wide() and self.pages and 3 <= y < h_ - 3:  # a click lands in a pane: that pane gets the focus
+                self.focus = "preview" if x > max(70, int(w * 0.56)) and not self.hdr else "list"
             return True
         action, arg = hit[3], hit[4]
         if action == "tab":

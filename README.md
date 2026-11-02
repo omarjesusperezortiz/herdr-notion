@@ -121,7 +121,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `z` | compact rows: a colored bar replaces the status word (`NO_COLOR=1` turns colors off) |
 | `x` | mark a page (and move down); `s` then sets one status on every marked page, `Esc` clears the marks |
 | `>` | move the page to the next status (asks to confirm the first time only) |
-| `M` | mouse on/off: click a row (twice opens it), a tab or a status chip; the wheel scrolls the pane under the pointer |
+| `M` | mouse on/off: click a row (twice opens it), a tab or a status chip; a click in the preview gives it the focus (a click in the list takes it back); the wheel scrolls the pane under the pointer |
 | `V` | open one of the database's Notion views as a tab: its filters, its order, real paging |
 | `B` | Board: a column per status. `h` `l` change column, `j` `k` card, `H` `L` move the card to the next status (asks first), `⏎` opens it, `B` or `Esc` goes back to the list |
 | `L` | Open a page linked from this one (a relation property); `←` comes back. The preview and the page show `☑ 2/3 subtasks · ↗ 2 related` when there are to-dos or links |

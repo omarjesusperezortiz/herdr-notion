@@ -389,6 +389,36 @@ class Mouse(unittest.TestCase):
         self.click(app, 10, 5)
         self.assertEqual(opened, [app.pages[2]["id"]])
 
+    def test_clicking_the_preview_gives_it_the_focus_and_clicking_a_row_takes_it_back(self):
+        app, scr = fresh(h=28, w=150)
+        app.draw_list()
+        self.click(app, 120, 8)
+        self.assertEqual(app.focus, "preview")
+        self.click(app, 10, 4)
+        self.assertEqual(app.focus, "list")
+        self.assertEqual(app.sel, 1)
+
+    def test_clicking_empty_list_space_while_in_the_preview_goes_back_to_the_list(self):
+        app, scr = fresh(h=28, w=150)
+        app.draw_list()
+        app.focus = "preview"
+        self.click(app, 10, 20)  # below the last row
+        self.assertEqual(app.focus, "list")
+
+    def test_a_click_in_the_preview_does_nothing_when_the_pane_has_no_preview(self):
+        app, scr = fresh(h=28, w=100)
+        app.draw_list()
+        self.click(app, 90, 8)
+        self.assertEqual(app.focus, "list")
+
+    def test_a_click_in_the_preview_does_nothing_while_the_cursor_is_on_a_group_header(self):
+        app, scr = fresh(h=28, w=150)
+        app.list_key(ord("g"))
+        app.list_key(curses.KEY_UP)
+        app.draw_list()
+        self.click(app, 120, 8)
+        self.assertEqual(app.focus, "list")
+
     def test_clicking_two_different_rows_does_not_open(self):
         app, scr = fresh(h=28, w=100)
         app.draw_list()
