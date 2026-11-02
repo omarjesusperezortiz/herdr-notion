@@ -128,6 +128,8 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `w` | New git worktree and branch for the ticket (named like `et-2546-fix-login-redirect`, from `main` when it exists), then an agent starts inside it with the ticket as the prompt. Asks for the repository, the branch name and a confirm. Your current checkout is not touched. `branch_prefix = "feat/"` under `[delegate]` adds a prefix |
 | `Q` | Quick filter on what is loaded: changed today or this week, unread, no assignee, due this week. It shows as a pill; `Esc` removes it |
 | `c` | Choose which properties the table shows and in what order (space ticks, `J` `K` move, `⏎` saves). Kept in `layout.json` next to your config |
+| `a` | In a wide pane, show the selected ticket's agent (its terminal, live, re-read every 2 s) in the preview instead of the ticket; `a` again goes back |
+| `A` | Agents view: every agent herdr lists with its state, how long it has been on its ticket and the ticket (delegated or attached from here, matched by ticket id, or the id written in its name). `⏎` jumps to its pane, `a` attaches it to a ticket, `r` asks herdr again, `A` or `Esc` goes back |
 | `u` | Undo the last status change (single, bulk, `>`, board move) for a minute. A toast says what happened: green for done, red for a failure (stays until a key) |
 | `p` | Show or hide the preview pane. Hidden, the table uses the whole width and `→` opens the page |
 | `-` / `=` | Fold or unfold just the selected group / all groups (`-` turns grouping on if it is off; clicking a group header does the same) |

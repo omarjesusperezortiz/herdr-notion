@@ -31,6 +31,27 @@ def run(args, timeout=60):
         return {"raw": out}
 
 
+def run_text(args, timeout=20):
+    """Run a herdr subcommand and return its plain-text output."""
+    try:
+        r = subprocess.run([herdr_bin()] + args, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise HerdrError("herdr %s: %s" % (args[0], e))
+    if r.returncode != 0:
+        raise HerdrError("herdr %s failed: %s" % (" ".join(args[:2]), (r.stderr or r.stdout).strip()[:200]))
+    return r.stdout
+
+
+def read_agent(pane_id, lines=60, runner=run_text):
+    """The last `lines` lines of an agent's terminal, without trailing blank lines."""
+    text = runner(["agent", "read", pane_id, "--lines", str(lines), "--source", "recent", "--format", "text"])
+    return [l.rstrip() for l in text.rstrip("\n").split("\n")] if text.strip() else []
+
+
+def focus_agent(pane_id, runner=run):
+    runner(["agent", "focus", pane_id])
+
+
 def list_agents(runner=run):
     agents = runner(["agent", "list"]).get("result", {}).get("agents", [])
     return [{

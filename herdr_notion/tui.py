@@ -27,7 +27,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "remove the newest filter pill, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("u", "undo the last status change (for a minute)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -86,6 +86,10 @@ class App:
         self.hits = []  # clickable regions of the last drawing: (y, x0, x1, action, argument)
         self.focus = "list"  # "preview" while the arrow keys scroll the preview pane
         self.colors, self.pairs, self.sel_bg = False, {}, False  # filled by init_colors
+        self.preview_mode = "ticket"  # a switches the preview to the agent's terminal
+        self.agent_text = {}  # pane id -> (time fetched, lines)
+        self.last_agents = []  # herdr's agent list as of the last poll
+        self.agents_view, self.arow = False, 0  # A: every agent and its ticket; the selected row
         self.cached_at = None  # ISO time of the saved list on screen while the fresh one loads
         self.toast_state = None  # {text, kind, until}: the message in the footer, with a color and a life
         self.undo = None  # the last status write(s), for u
@@ -170,6 +174,8 @@ class App:
         """Do what pressing `k` would do in the screen that is showing (a click on a footer hint or a menu item)."""
         if self.detail:
             return self.detail_key(k)
+        if self.agents_view:
+            return self.agents_key(k)
         if self.board:
             return self.board_key(k)
         return self.list_key(k)
@@ -206,6 +212,14 @@ class App:
         if self.detail:
             if raw:
                 self.dscroll = max(0, self.dscroll + 2 * wheel)
+            elif b & curses.BUTTON1_PRESSED:
+                hit = self.hit_at(x, y)
+                if hit and hit[3] == "key" and self.hint_key(hit[4]) is not None:
+                    return self.send_key(self.hint_key(hit[4]))
+            return True
+        if self.agents_view:
+            if raw:
+                self.arow = max(0, self.arow + wheel)
             elif b & curses.BUTTON1_PRESSED:
                 hit = self.hit_at(x, y)
                 if hit and hit[3] == "key" and self.hint_key(hit[4]) is not None:
@@ -1172,6 +1186,10 @@ class App:
             return
         p = self.pages[self.sel]
         y = top
+        ap = self.agent_pane(p) if self.preview_mode == "agent" else None
+        if ap:
+            self.draw_agent_preview(x0, width, top, bottom, p, ap)
+            return
         for line in textwrap.wrap(nt.clean(nt.page_title(p)), width)[:3]:
             self.scr.addnstr(y, x0, line, width, curses.A_BOLD)
             y += 1
@@ -1214,6 +1232,24 @@ class App:
             hint = ("↑↓ scroll · ← back · " if self.focus == "preview"
                     else ("Space ▾ more · " if more else "b ▴ back · ")) + mark
             self.scr.addnstr(bottom - 1, max(x0, x0 + width - len(hint)), hint, min(len(hint), width), curses.A_DIM | curses.A_BOLD)
+
+    def draw_agent_preview(self, x0, width, top, bottom, page, ap):
+        pane, name = ap
+        cell = self.agent_cell(page)
+        self.scr.addnstr(top, x0, nt.clip("%s · %s" % (name, cell[0] if cell else ""), width), width, curses.A_BOLD | self.paint(cell[1] if cell else "grey"))
+        self.scr.addnstr(top + 1, x0, nt.clip("for %s" % nt.page_title(page), width), width, curses.A_DIM)
+        self.scr.addnstr(top + 2, x0, "─" * width, width, curses.A_DIM)
+        got = self.agent_text.get(pane)
+        room = bottom - (top + 3) - 1
+        if not got or got[1] is None:
+            self.scr.addnstr(top + 3, x0, "Reading the terminal…", width, curses.A_DIM)
+        else:
+            wrapped = []
+            for line in got[1]:
+                wrapped += textwrap.wrap(line, width, replace_whitespace=False, drop_whitespace=False) or [""]
+            for r, line in enumerate(wrapped[-room:] if room > 0 else []):
+                self.scr.addnstr(top + 3 + r, x0, line, width)
+        self.scr.addnstr(bottom - 1, x0, "live · a shows the ticket", width, curses.A_DIM | curses.A_BOLD)
 
     def draw_list(self):
         h, w = self.scr.getmaxyx()
@@ -1335,9 +1371,116 @@ class App:
                     [("⏎", "open"), ("s", "status"), ("d", "delegate"), ("Tab", "next tab"), ("/", "search")]
                     + ([("→", "preview")] if wide else []) + [("e", "edit"), ("z", "compact"), ("n", "new"), ("?", "more")])
 
+    # ------------------------------------------------------------ agents view
+    def agent_rows(self):
+        """[(agent, page or None, elapsed text)] for every agent herdr lists, with the ticket it is on: one delegated or
+        attached from here, else the ticket whose id or title is in the agent's title."""
+        by_pane = {d["pane"]: pid for pid, d in self.delegations.items()}
+        pages = {p["id"]: p for p in self.all}
+        rows = []
+        for a in self.last_agents:
+            pid = by_pane.get(a["pane_id"])
+            page = pages.get(pid) if pid else nt.match_agent_to_pages(a, self.all)
+            d = self.delegations.get(pid or (page["id"] if page else ""), {})
+            took = nt.elapsed_text((d.get("ended") or time.time()) - d["started"]) if d.get("started") else ""
+            hint = nt.ticket_id_in("%s %s" % (a["name"], a.get("title", "")))
+            rows.append((a, page, took, d.get("title") if pid and not page else ("%s · not in this list" % hint if hint and not page else None)))
+        order = {"needs you": 0, "working": 1, "done": 2, "idle": 3, "sent": 4}
+        rows.sort(key=lambda r: order.get(nt.agent_state(r[0]["status"])[2], 5))
+        return rows
+
+    def open_agents_view(self):
+        if not self.herdr_ok:
+            self.toast("herdr cannot be reached from here", "err")
+            return
+        self.agents_view, self.arow = True, 0
+        self.next_agent_poll = 0
+
+    def draw_agents(self):
+        h, w = self.scr.getmaxyx()
+        self.scr.erase()
+        self.hits = []
+        rows = self.agent_rows()
+        self.scr.addnstr(0, 0, " Notion ", w - 1, curses.A_BOLD)
+        self.scr.addnstr(0, 9, "Tickets", w - 10, curses.A_DIM)
+        self.scr.addnstr(0, 18, "Agents", w - 19, self.paint("tab") | curses.A_BOLD)
+        right = "%d agent%s " % (len(rows), "" if len(rows) == 1 else "s")
+        self.scr.addnstr(0, max(26, w - 1 - len(right)), right, len(right), curses.A_DIM)
+        head = "  " + "AGENT".ljust(14) + "TIME".ljust(8) + "STATE".ljust(14) + "TICKET"
+        self.scr.addnstr(2, 0, head, w - 1, curses.A_DIM | curses.A_BOLD)
+        self.arow = max(0, min(self.arow, max(len(rows) - 1, 0)))
+        room = h - 6
+        top = max(0, min(self.arow - room + 1, len(rows) - room)) if rows else 0
+        if not rows:
+            self.scr.addnstr(4, 2, "herdr lists no agents. Start one with d (delegate) on a ticket.", w - 3, curses.A_DIM)
+        for r, (a, page, took, title) in enumerate(rows[top:top + room]):
+            y, on = 3 + r, top + r == self.arow
+            glyph, key, words = nt.agent_state(a["status"], False)
+            self.scr.addnstr(y, 0, " " * (w - 1), w - 1, self.on_attr() if on else 0)
+            self.scr.addnstr(y, 0, "▌", 1, self.on_attr(key) if on else self.paint(key))
+            self.scr.addnstr(y, 2, nt.clip(a["name"] or a["agent"], 13), 13, (self.on_attr() if on else 0) | (curses.A_BOLD if on else 0))
+            self.scr.addnstr(y, 16, took, 7, self.on_attr("grey") if on else self.paint("grey"))
+            self.scr.addnstr(y, 24, nt.clip("%s %s" % (glyph, words), 13), 13, self.on_attr(key) if on else self.paint(key))
+            if page:
+                tid = nt.page_ticket_id(page)
+                text, tkey = ("%s %s" % (tid, nt.page_title(page))).strip(), None
+            elif title:
+                text, tkey = title, None
+            else:
+                text, tkey = "no ticket · a attaches one", "grey"
+            self.scr.addnstr(y, 38, nt.clip(text, w - 39), max(w - 39, 0), (self.on_attr(tkey) if on else self.paint(tkey) if tkey else 0))
+        self.rule(h - 3, w)
+        self.footer([("↑↓", "move"), ("⏎", "go to the agent"), ("a", "attach to a ticket"), ("r", "refresh"), ("A", "tickets"), ("?", "more")])
+
+    def agents_key(self, k):
+        """Keys in the agents view: ↑↓ move, ⏎ focus the agent's pane, a attach it to a ticket, r refresh, A or Esc back."""
+        self.msg = ""
+        rows = self.agent_rows()
+        if k in (ord("A"), ord("q"), 27):
+            self.agents_view = False
+        elif k in (curses.KEY_DOWN, ord("j")):
+            self.arow = min(self.arow + 1, max(len(rows) - 1, 0))
+        elif k in (curses.KEY_UP, ord("k")):
+            self.arow = max(self.arow - 1, 0)
+        elif k in (10, 13, curses.KEY_ENTER) and rows:
+            self.guard(dg.focus_agent, rows[min(self.arow, len(rows) - 1)][0]["pane_id"])
+        elif k == ord("a") and rows:
+            self.guard(self.attach_agent, rows[min(self.arow, len(rows) - 1)][0])
+        elif k == ord("r"):
+            self.next_agent_poll = 0
+            self.toast("asking herdr…", "info", 2)
+        elif k == ord("?"):
+            self.help()
+        return True
+
+    def attach_agent(self, agent):
+        """a: tie this agent to a ticket you pick, so the list shows it and its end offers the status change."""
+        text = self.ask("ticket (part of its title or id): ")
+        if not text:
+            return
+        scored = []
+        for p in self.all:
+            sc = nt.fuzzy_score(text, "%s %s" % (nt.page_title(p), nt.page_ticket_id(p)))
+            if sc is not None:
+                scored.append((sc, p))
+        scored.sort(key=lambda t: -t[0])
+        pages = [p for _, p in scored[:9]]
+        if not pages:
+            self.toast("no loaded ticket matches “%s”" % text, "info", 4)
+            return
+        i = self.popup("Attach %s to" % (agent["name"] or agent["agent"]), [nt.page_title(p) for p in pages])
+        if i is None:
+            return
+        page = pages[i]
+        self.delegations[page["id"]] = {"pane": agent["pane_id"], "agent": agent["name"] or agent["agent"], "title": nt.page_title(page),
+                                        "seen_working": agent["status"] == "working", "done": False, "status": agent["status"],
+                                        "started": time.time(), "attached": True}
+        self.save_delegations()
+        self.toast("%s is now on “%s”" % (agent["name"] or agent["agent"], nt.clip(nt.page_title(page), 40)))
+
     # ------------------------------------------------------------ board
     def redraw(self):
-        (self.draw_detail if self.detail else self.draw_board if self.board else self.draw_list)()
+        (self.draw_detail if self.detail else self.draw_agents if self.agents_view else self.draw_board if self.board else self.draw_list)()
 
     def board_columns(self):
         """[(status name, [indexes into self.pages])]: a column per option in the order of the options in Notion."""
@@ -1985,6 +2128,51 @@ class App:
             return "%s %s" % (glyph, a["name"] or a["agent"]), key
         return None
 
+    def agent_pane(self, page):
+        """(pane id, agent name) of the agent working on `page`: one delegated from here, or one matched by ticket id."""
+        if not page:
+            return None
+        d = self.delegations.get(page["id"])
+        if d:
+            return d["pane"], d["agent"]
+        a = self.found.get(page["id"])
+        return (a["pane_id"], a["name"] or a["agent"]) if a else None
+
+    def toggle_agent_preview(self):
+        """a: show the agent's terminal (live) in the preview instead of the ticket, and back."""
+        if not self.wide():
+            self.toast("the agent preview needs the preview pane: p shows it, or widen the pane", "info", 4)
+            return
+        if self.preview_mode == "agent":
+            self.preview_mode = "ticket"
+            return
+        page = self.current()
+        if not page or not self.agent_pane(page):
+            self.toast("no agent is on this ticket", "info", 3)
+            return
+        self.preview_mode = "agent"
+        self.agent_text.pop(self.agent_pane(page)[0], None)
+
+    AGENT_REFRESH = 2.0
+
+    def poll_agent_preview(self):
+        """While the preview shows an agent, re-read its terminal every couple of seconds (never over a list load)."""
+        if self.preview_mode != "agent" or self.job or self.detail or self.board or not self.wide():
+            return
+        ap = self.agent_pane(self.current())
+        if not ap:
+            return
+        pane = ap[0]
+        got = self.agent_text.get(pane)
+        if got and time.time() - got[0] < self.AGENT_REFRESH:
+            return
+        self.agent_text[pane] = (time.time(), got[1] if got else None)  # stamp now: one request per interval
+
+        def done(lines):
+            self.agent_text[pane] = (time.time(), lines)
+
+        self.start_job("", lambda: dg.read_agent(pane), done, "silent")
+
     def poll_agents(self):
         """Every few seconds ask herdr how the delegated agents are doing (never while something else loads)."""
         active = [d for d in self.delegations.values() if not d.get("done")]
@@ -2022,6 +2210,7 @@ class App:
         if agents is None:
             return
         self.herdr_ok = True
+        self.last_agents = agents
         self.adopt(agents)
         status = {a["pane_id"]: a["status"] for a in agents}
         for pid, d in self.delegations.items():
@@ -3207,6 +3396,7 @@ class App:
             self.maybe_preview()
             self.auto_refresh()
             self.poll_agents()
+            self.poll_agent_preview()
             if self.finished:
                 self.redraw()
                 self.guard(self.offer_review)
@@ -3222,6 +3412,8 @@ class App:
             if self.detail:
                 if not self.detail_key(k):
                     continue
+            elif self.agents_view:
+                self.agents_key(k)
             elif self.board:
                 self.board_key(k)
             elif self.list_key(k) is False:
@@ -3347,6 +3539,10 @@ class App:
             self.set_status_filter("")
         elif k == ord("B"):
             self.toggle_board()
+        elif k == ord("a"):
+            self.toggle_agent_preview()
+        elif k == ord("A"):
+            self.open_agents_view()
         elif k == ord("Q"):
             self.guard(self.pick_quick_filter)
         elif k == ord("c"):

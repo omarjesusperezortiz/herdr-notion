@@ -33,8 +33,8 @@ in-app help say how to use it. Order below is the build order. Writes to Notion 
 
 ## 5. Agent views
 
-- [ ] **B2 Agent preview.** `a` switches the preview between the ticket and the tail of its agent's terminal.
-- [ ] **B6 Agents view.** Every herdr agent and the ticket matched to it; `a` attaches an unmatched agent to a ticket.
+- [x] **B2 Agent preview.** `a` switches the preview between the ticket and the tail of its agent's terminal.
+- [x] **B6 Agents view.** Every herdr agent and the ticket matched to it; `a` attaches an unmatched agent to a ticket.
 
 ## 6. Larger or optional
 

@@ -296,6 +296,20 @@ def relations_line(page, body=None):
     return " · ".join(parts)
 
 
+def ticket_id_in(text):
+    """The first ticket id (ET-2535) written in `text`, upper-cased, or ''."""
+    m = re.search(r"(?<![A-Za-z0-9])([A-Za-z]{2,8}-\d{1,6})(?!\d)", text or "")
+    return m.group(1).upper() if m else ""
+
+
+def match_agent_to_pages(agent, pages):
+    """The page an agent is on, from its title, name or branch (see match_agent), or None."""
+    for page in pages:
+        if match_agent(page, [agent]):
+            return page
+    return None
+
+
 def parse_time(iso):
     """Aware datetime for an ISO-8601 timestamp or date, or None."""
     from datetime import datetime, timezone

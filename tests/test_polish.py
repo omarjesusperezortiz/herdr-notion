@@ -631,3 +631,228 @@ class GotoBox(unittest.TestCase):
         app.detail = {"page": app.pages[0], "lines": [], "body": ""}
         app.detail_key(16)
         self.assertEqual(called, ["board", "board"])
+
+
+from herdr_notion import delegate as dg
+
+
+def ag(pane="w1:p1", name="claude", status="working", title=""):
+    return {"pane_id": pane, "name": name, "agent": "claude", "status": status, "cwd": "/x", "title": title}
+
+
+class AgentPreview(unittest.TestCase):
+    def app(self, **kw):
+        app, scr = fresh(h=24, w=150, **kw)
+        app.draw_list()
+        app.delegations[app.pages[0]["id"]] = {"pane": "w1:p1", "agent": "claude", "title": "t", "status": "working", "done": False,
+                                               "started": time.time() - 90}
+        return app, scr
+
+    def test_read_agent_returns_the_trimmed_tail(self):
+        calls = []
+        out = dg.read_agent("w1:p1", 5, lambda args: calls.append(args) or "one  \ntwo\n\n\n")
+        self.assertEqual(out, ["one", "two"])
+        self.assertEqual(calls[0][:3], ["agent", "read", "w1:p1"])
+        self.assertIn("5", calls[0])
+        self.assertEqual(dg.read_agent("w1:p1", 5, lambda args: "  \n"), [])
+
+    def test_a_switches_to_the_agent_and_back(self):
+        app, _ = self.app()
+        app.sel = 0
+        app.list_key(ord("a"))
+        self.assertEqual(app.preview_mode, "agent")
+        app.list_key(ord("a"))
+        self.assertEqual(app.preview_mode, "ticket")
+
+    def test_a_ticket_without_an_agent_says_so_and_stays_on_the_ticket(self):
+        app, _ = self.app()
+        app.sel = 1
+        app.list_key(ord("a"))
+        self.assertEqual(app.preview_mode, "ticket")
+        self.assertEqual(app.toast_state["text"], "no agent is on this ticket")
+
+    def test_a_narrow_pane_explains(self):
+        app, _ = fresh(h=24, w=90)
+        app.list_key(ord("a"))
+        self.assertIn("needs the preview", app.toast_state["text"])
+
+    def test_the_preview_shows_the_tail_header_and_cue(self):
+        app, scr = self.app()
+        app.sel = 0
+        app.list_key(ord("a"))
+        app.agent_text["w1:p1"] = (time.time(), ["● Read src/auth.ts", "● Bash npm test", "  12 passed"])
+        scr.clear()
+        app.draw_list()
+        for text in ("claude · ◐ claude 1m", "for ", "● Read src/auth.ts", "12 passed", "live · a shows the ticket"):
+            self.assertTrue(scr.has(text), text)
+
+    def test_while_the_terminal_is_not_read_yet_it_says_so(self):
+        app, scr = self.app()
+        app.sel = 0
+        app.list_key(ord("a"))
+        scr.clear()
+        app.draw_list()
+        self.assertTrue(scr.has("Reading the terminal…"))
+
+    def test_only_the_last_lines_that_fit_are_shown(self):
+        app, scr = self.app()
+        app.sel = 0
+        app.list_key(ord("a"))
+        app.agent_text["w1:p1"] = (time.time(), ["line %03d" % i for i in range(200)])
+        scr.clear()
+        app.draw_list()
+        self.assertTrue(scr.has("line 199"))
+        self.assertFalse(scr.has("line 000"))
+
+    def test_a_row_without_an_agent_shows_its_ticket_even_in_agent_mode(self):
+        app, scr = self.app()
+        app.sel = 0
+        app.list_key(ord("a"))
+        app.sel = 2
+        app.cache[app.pages[2]["id"]] = ["ticket body line"]
+        scr.clear()
+        app.draw_list()
+        self.assertTrue(scr.has("ticket body line"))
+
+    def test_polling_reads_the_terminal_once_per_interval_and_only_in_agent_mode(self):
+        app, _ = self.app()
+        app.sel = 0
+        started = []
+        app.start_job = lambda label, work, done, kind="list": started.append((kind, done))
+        app.poll_agent_preview()
+        self.assertEqual(started, [])  # ticket mode
+        app.preview_mode = "agent"
+        app.poll_agent_preview()
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0][0], "silent")
+        app.poll_agent_preview()
+        self.assertEqual(len(started), 1)  # inside the interval
+        started[0][1](["x"])
+        self.assertEqual(app.agent_text["w1:p1"][1], ["x"])
+        with mock.patch("time.time", return_value=time.time() + 5):
+            app.poll_agent_preview()
+        self.assertEqual(len(started), 2)
+
+    def test_polling_never_starts_over_another_job(self):
+        app, _ = self.app()
+        app.sel = 0
+        app.preview_mode = "agent"
+        app.job = {"kind": "list", "label": "x", "done": False, "seq": 1, "on_done": None}
+        app.start_job = lambda *a, **k: self.fail("started a job over another")
+        app.poll_agent_preview()
+
+
+class AgentsView(unittest.TestCase):
+    def app(self):
+        app, scr = fresh(h=24, w=110)
+        for i, p in enumerate(app.all):
+            p["properties"]["ID"] = {"type": "rich_text", "rich_text": [{"plain_text": "ET-%d" % (100 + i)}]}
+        app.refilter()
+        app.save_delegations = lambda: None
+        app.herdr_ok = True
+        ids = {nt.page_title(p): p for p in app.all}
+        app.delegations[ids["Charlie"]["id"]] = {"pane": "w1:pA", "agent": "claude", "title": "Charlie", "status": "working",
+                                                 "done": False, "started": time.time() - 720}
+        tid = nt.page_ticket_id(ids["Echo"])
+        app.last_agents = [ag("w1:pA", "claude", "working"), ag("w1:pB", "codex", "blocked", "%s demo" % tid),
+                           ag("w1:pC", "pi", "idle", "scratch"), ag("w1:pD", "claude", "done", "")]
+        return app, scr
+
+    def test_rows_put_agents_that_need_you_first_and_match_tickets(self):
+        app, _ = self.app()
+        rows = app.agent_rows()
+        self.assertEqual([r[0]["name"] for r in rows], ["codex", "claude", "claude", "pi"])
+        by = {r[0]["pane_id"]: r for r in rows}
+        self.assertEqual(nt.page_title(by["w1:pA"][1]), "Charlie")  # delegated from here
+        self.assertEqual(by["w1:pA"][2], "12m")
+        self.assertEqual(nt.page_title(by["w1:pB"][1]), "Echo")  # matched by the ticket id in its title
+        self.assertIsNone(by["w1:pC"][1])
+
+    def test_a_opens_the_view_and_it_draws_every_column(self):
+        app, scr = self.app()
+        app.list_key(ord("A"))
+        self.assertTrue(app.agents_view)
+        app.draw_agents()
+        for text in ("Agents", "4 agents", "AGENT", "STATE", "TICKET", "◉ needs you", "◐ working", "12m", "Charlie", "no ticket · a attaches one"):
+            self.assertTrue(scr.has(text), text)
+
+    def test_arrows_enter_and_back(self):
+        app, _ = self.app()
+        app.list_key(ord("A"))
+        focused = []
+        saved = dg.focus_agent
+        dg.focus_agent = lambda pane: focused.append(pane)
+        try:
+            app.agents_key(curses.KEY_DOWN)
+            app.agents_key(10)
+        finally:
+            dg.focus_agent = saved
+        self.assertEqual(focused, [app.agent_rows()[1][0]["pane_id"]])
+        app.agents_key(27)
+        self.assertFalse(app.agents_view)
+
+    def test_attach_ties_an_agent_to_a_picked_ticket(self):
+        app, _ = self.app()
+        app.list_key(ord("A"))
+        app.arow = next(i for i, r in enumerate(app.agent_rows()) if r[0]["pane_id"] == "w1:pC")
+        app.ask = lambda label, initial="": "delta"
+        app.popup = lambda title, items, start=0, at=None: 0
+        app.agents_key(ord("a"))
+        delta = next(p for p in app.all if nt.page_title(p) == "Delta")
+        self.assertEqual(app.delegations[delta["id"]]["pane"], "w1:pC")
+        self.assertTrue(app.delegations[delta["id"]]["attached"])
+        row = next(r for r in app.agent_rows() if r[0]["pane_id"] == "w1:pC")
+        self.assertEqual(nt.page_title(row[1]), "Delta")
+
+    def test_attach_with_no_match_says_so(self):
+        app, _ = self.app()
+        app.list_key(ord("A"))
+        app.ask = lambda label, initial="": "zzzzzz"
+        app.popup = lambda *a, **k: self.fail("popup for no match")
+        app.agents_key(ord("a"))
+        self.assertIn("no loaded ticket matches", app.toast_state["text"])
+
+    def test_without_herdr_the_view_does_not_open(self):
+        app, _ = self.app()
+        app.herdr_ok = False
+        app.list_key(ord("A"))
+        self.assertFalse(app.agents_view)
+        self.assertEqual(app.toast_state["kind"], "err")
+
+    def test_no_agents_shows_a_hint(self):
+        app, scr = self.app()
+        app.last_agents = []
+        app.list_key(ord("A"))
+        app.draw_agents()
+        self.assertTrue(scr.has("herdr lists no agents"))
+
+    def test_r_asks_herdr_again(self):
+        app, _ = self.app()
+        app.list_key(ord("A"))
+        app.next_agent_poll = time.time() + 100
+        app.agents_key(ord("r"))
+        self.assertEqual(app.next_agent_poll, 0)
+
+    def test_the_footer_hints_are_listed(self):
+        app, scr = self.app()
+        app.list_key(ord("A"))
+        app.draw_agents()
+        self.assertTrue(scr.has("a attach to a ticket"))
+
+
+class TicketIdIn(unittest.TestCase):
+    def test_finds_a_ticket_id_in_agent_names_and_titles(self):
+        f = nt.ticket_id_in
+        self.assertEqual(f("tester-et-2535"), "ET-2535")
+        self.assertEqual(f("✳ ET-2546 demo OAuth"), "ET-2546")
+        self.assertEqual(f("no ticket here"), "")
+        self.assertEqual(f("sha-1234567 fix"), "")  # too many digits to be a ticket
+        self.assertEqual(f(""), "")
+
+    def test_an_agent_whose_ticket_is_not_loaded_shows_the_id(self):
+        app, scr = fresh(h=24, w=110)
+        app.herdr_ok = True
+        app.last_agents = [ag("w1:pZ", "tester-et-9999", "idle")]
+        app.list_key(ord("A"))
+        app.draw_agents()
+        self.assertTrue(scr.has("ET-9999 · not in this list"))
