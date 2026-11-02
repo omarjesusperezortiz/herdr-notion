@@ -51,4 +51,13 @@ in-app help say how to use it. Order below is the build order. Writes to Notion 
 
 ## How it was tested
 
-Filled in at the end of the round.
+- **Unit tests** (438 in all, `python3 -m unittest discover -s tests -t .`): every task above has its own, driving the real screens on a
+  fake terminal with a fake Notion client and a fake herdr.
+- **Real terminal, read-only against the real database** (a pty with a screen emulator, copied config and state folders so nothing of
+  the user's was touched): the status colors (six distinct colors on real statuses, the selection background from herdr's theme), filter
+  pills and Esc, the go-anywhere box, the agents view with 31 real agents, the page view sections on a real ticket, the column picker,
+  the saved list on a second start (rows from the cache, grouping remembered), themes cycling live, `digest --bar` printing a real line.
+- **Real git** (a temporary repository): the worktree for `w`.
+- **Fakes only, not run for real:** every write to Notion (status change, undo, board move, bulk, edit, comment), starting or closing an
+  agent pane, attaching an agent, the live agent preview (the real `herdr agent read` was run by hand once, but not through the app),
+  and the mouse inside herdr.
