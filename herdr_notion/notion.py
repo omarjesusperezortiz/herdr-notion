@@ -381,8 +381,8 @@ def pad(text, width):
     return text + " " * (width - cell_width(text))
 
 
-def fit_hints(hints, width):
-    """Join (key, label) hints into one line that fits `width` without cutting a hint.
+def fit_hint_parts(hints, width):
+    """[(index into hints, text)] that fit `width` without cutting a hint.
 
     Hints are in priority order. Each gets its label while it fits; the rest
     fall back to the bare key, and are dropped only if even that does not fit.
@@ -393,12 +393,17 @@ def fit_hints(hints, width):
         full = "%s %s" % (k, label)
         rest = sum(len(kk) + 2 for kk, _ in hints[i + 1:])  # reserve room for bare keys
         if used + len(full) + rest <= width:
-            parts.append(full)
+            parts.append((i, full))
             used += len(full) + 2
         elif used + len(k) <= width:
-            parts.append(k)
+            parts.append((i, k))
             used += len(k) + 2
-    return "  ".join(parts)
+    return parts
+
+
+def fit_hints(hints, width):
+    """Join (key, label) hints into one line that fits `width` (see fit_hint_parts)."""
+    return "  ".join(t for _, t in fit_hint_parts(hints, width))
 
 
 def clipboard_cmd(which):

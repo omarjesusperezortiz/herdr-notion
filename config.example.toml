@@ -16,6 +16,8 @@ columns = ["Status", "Priority", "Assignee"]
 # title_property = "Name"
 
 page_size = 50
+# Clicks and the mouse wheel (M toggles it while running). Off by default: it stops text selection by dragging.
+# mouse = true
 
 # Named filter tabs, switched with `f` or 1-9. The first one opens. `filter` is a
 # Notion filter object (https://developers.notion.com/reference/filter-data-source-entries);
