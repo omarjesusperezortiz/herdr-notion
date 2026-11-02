@@ -127,6 +127,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `L` | Open a page linked from this one (a relation property); `←` comes back. The preview and the page show `☑ 2/3 subtasks · ↗ 2 related` when there are to-dos or links |
 | `w` | New git worktree and branch for the ticket (named like `et-2546-fix-login-redirect`, from `main` when it exists), then an agent starts inside it with the ticket as the prompt. Asks for the repository, the branch name and a confirm. Your current checkout is not touched. `branch_prefix = "feat/"` under `[delegate]` adds a prefix |
 | `Q` | Quick filter on what is loaded: changed today or this week, unread, no assignee, due this week. It shows as a pill; `Esc` removes it |
+| `c` | Choose which properties the table shows and in what order (space ticks, `J` `K` move, `⏎` saves). Kept in `layout.json` next to your config |
 | `u` | Undo the last status change (single, bulk, `>`, board move) for a minute. A toast says what happened: green for done, red for a failure (stays until a key) |
 | `p` | Show or hide the preview pane. Hidden, the table uses the whole width and `→` opens the page |
 | `-` / `=` | Fold or unfold just the selected group / all groups (`-` turns grouping on if it is off; clicking a group header does the same) |
@@ -182,6 +183,14 @@ Reload herdr's config after changing it. Right click may be kept by herdr for it
 | inside any popup | click an item to pick it, the wheel moves, a click outside cancels |
 | a board card | selects it (twice opens it); drag it onto another column to change its status, after a confirm |
 | the wheel | scrolls the pane under the pointer: one row per notch in the list, two lines in the preview and the page. A trackpad swipe sends dozens of events, so at most one counts every 40 ms (on macOS system Python the terminal library cannot say where the wheel turned down, so down uses the last pointer position) |
+
+## What is remembered
+
+Next to your config the plugin keeps a few small files (nothing goes to Notion): `seen.json` (edit times for the unread dot),
+`layout.json` (per tab: sort, grouping, compact rows and whether the preview is on; and the columns you picked with `c`), and
+`list-cache.json` (the first page of the last 8 tabs you looked at, so the next start draws rows at once, dimmed with
+"cached · 3h ago", and swaps in the fresh ones). The cache holds page titles and the properties you show, so set `cache = false`
+under `[notion]` if you would rather it did not.
 
 ## Colors
 

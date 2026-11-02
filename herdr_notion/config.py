@@ -57,6 +57,7 @@ def normalize(raw):
         "page_size": int(n.get("page_size", 50)),
         "mouse": bool(n.get("mouse", False)),
         "theme": str(n.get("theme", "default")),
+        "cache": bool(n.get("cache", True)),
         "colors": {str(k): str(v) for k, v in (raw.get("colors") or {}).items()},
         "filters": raw.get("filters") or [{"name": "All"}],
         "delegate": {

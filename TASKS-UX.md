@@ -22,8 +22,8 @@ in-app help say how to use it. Order below is the build order. Writes to Notion 
 
 ## 3. Speed and memory
 
-- [ ] **B4 Instant start.** The last list is kept on disk and drawn at once (dimmed, "cached · updated 3h ago"), then replaced.
-- [ ] **A6 Remembered layout and columns.** `c` picks the columns; sort, group, compact and preview are kept per tab.
+- [x] **B4 Instant start.** The last list is kept on disk and drawn at once (dimmed, "cached · updated 3h ago"), then replaced.
+- [x] **A6 Remembered layout and columns.** `c` picks the columns; sort, group, compact and preview are kept per tab.
 
 ## 4. Agents and jumping
 

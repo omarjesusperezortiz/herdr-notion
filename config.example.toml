@@ -6,6 +6,7 @@
 # The running pane reloads the config on `R`.
 
 [notion]
+# cache = false   # do not keep the last list on disk for an instant start
 # Written by the first-run setup, which also signs you in with the browser.
 # The data source id is the `collection://` id of the database.
 data_source_id = "00000000-0000-0000-0000-000000000000"

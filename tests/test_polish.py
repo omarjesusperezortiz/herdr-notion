@@ -185,3 +185,200 @@ class Undo(unittest.TestCase):
     def test_u_is_listed_in_the_help(self):
         from herdr_notion.tui import HELP
         self.assertTrue(any(k == "u" for _, items in HELP for k, _ in items))
+
+
+import json
+import os
+import tempfile
+
+
+def fresh_in(state_dir, **kw):
+    return make_app(copy.deepcopy(PAGES), state_dir=state_dir, **kw)
+
+
+class ListCache(unittest.TestCase):
+    def test_a_fresh_list_is_saved_and_a_new_session_draws_it_at_once(self):
+        d = tempfile.mkdtemp()
+        app, _ = fresh_in(d)
+        with open(os.path.join(d, "list-cache.json")) as f:
+            saved = json.load(f)
+        key = app.list_cache_key()
+        self.assertEqual(len(saved[key]["pages"]), 5)
+        app2, scr = fresh_in(d)
+        app2.all, app2.pages = [], []
+        self.assertTrue(app2.show_cached())
+        self.assertEqual(len(app2.pages), 5)
+        self.assertIsNotNone(app2.cached_at)
+        app2.draw_list()
+        self.assertTrue(scr.has("cached"))
+        self.assertTrue(scr.has("ago"))
+
+    def test_the_fresh_list_replaces_it_and_the_cached_mark_goes(self):
+        d = tempfile.mkdtemp()
+        app, _ = fresh_in(d)
+        app.show_cached()
+        self.assertIsNotNone(app.cached_at)
+        app.apply_list(app.client.discover(), {}, app.client.query({}))
+        self.assertIsNone(app.cached_at)
+
+    def test_showing_the_cache_does_not_save_it_again(self):
+        d = tempfile.mkdtemp()
+        app, _ = fresh_in(d)
+        path = os.path.join(d, "list-cache.json")
+        before = os.path.getmtime(path)
+        with open(path) as f:
+            at = json.load(f)[app.list_cache_key()]["at"]
+        time.sleep(0.01)
+        app.show_cached()
+        with open(path) as f:
+            self.assertEqual(json.load(f)[app.list_cache_key()]["at"], at)
+
+    def test_searches_server_side_status_and_the_off_switch_are_not_cached(self):
+        d = tempfile.mkdtemp()
+        app, _ = fresh_in(d)
+        os.remove(os.path.join(d, "list-cache.json"))
+        app.query = "x"
+        app.save_list_cache(app.client.discover(), {"results": app.all})
+        self.assertFalse(os.path.exists(os.path.join(d, "list-cache.json")))
+        app.query, app.server_status = "", True
+        app.save_list_cache(app.client.discover(), {"results": app.all})
+        self.assertFalse(os.path.exists(os.path.join(d, "list-cache.json")))
+        app.server_status = False
+        app.cfg = dict(app.cfg, cache=False)
+        app.save_list_cache(app.client.discover(), {"results": app.all})
+        self.assertFalse(os.path.exists(os.path.join(d, "list-cache.json")))
+        self.assertFalse(app.show_cached())
+
+    def test_only_the_latest_tabs_are_kept(self):
+        d = tempfile.mkdtemp()
+        app, _ = fresh_in(d)
+        for i in range(12):
+            app.cfg["filters"] = [{"name": "Tab %d" % i}]
+            app.fidx = 0
+            app.save_list_cache(app.client.discover(), {"results": app.all})
+            time.sleep(0.002)
+        with open(os.path.join(d, "list-cache.json")) as f:
+            self.assertEqual(len(json.load(f)), app.CACHED_TABS)
+
+    def test_switching_tab_shows_that_tabs_saved_list_while_loading(self):
+        d = tempfile.mkdtemp()
+        app, _ = fresh_in(d)
+        app.fidx = 1
+        app.save_list_cache(app.client.discover(), {"results": app.all[:2]})
+        app.fidx = 0
+        app.refresh_async = lambda *a, **k: None
+        app.pick_filter(1)
+        self.assertEqual(len(app.pages), 2)
+        self.assertIsNotNone(app.cached_at)
+
+    def test_an_unreadable_cache_file_is_ignored(self):
+        d = tempfile.mkdtemp()
+        app, _ = fresh_in(d)
+        with open(os.path.join(d, "list-cache.json"), "w") as f:
+            f.write("{not json")
+        self.assertFalse(app.show_cached())
+
+
+class RememberedLayout(unittest.TestCase):
+    def test_sort_group_compact_and_preview_are_kept_per_tab(self):
+        d = tempfile.mkdtemp()
+        app, _ = fresh_in(d, h=20, w=150)
+        app.list_key(ord("O"))
+        app.list_key(ord("g"))
+        app.list_key(ord("z"))
+        app.list_key(ord("p"))
+        app2, _ = fresh_in(d, h=20, w=150)
+        app2.apply_layout()
+        self.assertEqual((app2.sort_mode, app2.group, app2.compact, app2.preview_on), (1, True, True, False))
+
+    def test_another_tab_has_its_own_layout(self):
+        d = tempfile.mkdtemp()
+        app, _ = fresh_in(d, h=20, w=150)
+        app.list_key(ord("g"))
+        app.refresh_async = lambda *a, **k: None
+        app.pick_filter(1)
+        self.assertFalse(app.group)
+        app.list_key(ord("z"))
+        app.pick_filter(0)
+        self.assertTrue(app.group)
+        self.assertFalse(app.compact)
+
+    def test_a_click_sort_is_remembered_too(self):
+        d = tempfile.mkdtemp()
+        app, _ = fresh_in(d)
+        app.click_sort("title")
+        app2, _ = fresh_in(d)
+        app2.apply_layout()
+        self.assertEqual(app2.sort_mode, 1)
+
+    def test_a_new_tab_gets_the_defaults(self):
+        d = tempfile.mkdtemp()
+        app, _ = fresh_in(d)
+        app.apply_layout()
+        self.assertEqual((app.sort_mode, app.sort_rev, app.group, app.compact, app.preview_on), (0, False, False, False, True))
+
+
+class Columns(unittest.TestCase):
+    def run_checklist(self, app, keys, items, checked):
+        queue = iter(keys)
+
+        class Win:
+            def keypad(self, f): pass
+            def box(self): pass
+            def refresh(self): pass
+            def addnstr(self, *a): pass
+            def addstr(self, *a): pass
+            def getch(self): return next(queue)
+
+        with mock.patch("curses.newwin", lambda *a: Win()):
+            return app.checklist("Columns", items, checked)
+
+    def test_space_ticks_and_enter_keeps_the_ticked_ones_in_list_order(self):
+        app, _ = fresh()
+        # ticked ones come first (B), then the rest (A, C); j moves to A, space ticks it
+        got = self.run_checklist(app, [ord("j"), ord(" "), 10], ["A", "B", "C"], ["B"])
+        self.assertEqual(got, ["B", "A"])
+
+    def test_space_on_a_ticked_one_unticks_it(self):
+        app, _ = fresh()
+        self.assertEqual(self.run_checklist(app, [ord(" "), 10], ["A", "B"], ["A"]), [])
+
+    def test_escape_cancels(self):
+        app, _ = fresh()
+        self.assertIsNone(self.run_checklist(app, [27], ["A", "B"], ["A"]))
+
+    def test_j_and_k_reorder(self):
+        app, _ = fresh()
+        got = self.run_checklist(app, [ord("J"), 10], ["A", "B"], ["A", "B"])
+        self.assertEqual(got, ["B", "A"])
+
+    def test_picking_columns_updates_the_table_the_fetch_and_the_saved_layout(self):
+        d = tempfile.mkdtemp()
+        app, scr = fresh_in(d, h=20, w=100)
+        app.refresh_async = lambda *a, **k: None
+        app.checklist = lambda title, items, checked: ["Priority"]
+        app.pick_columns()
+        self.assertEqual(app.cfg["columns"], ["Priority"])
+        self.assertIn("Priority", app.client.want)
+        with open(os.path.join(d, "layout.json")) as f:
+            self.assertEqual(json.load(f)["_columns"][app.cfg["data_source_id"]], ["Priority"])
+        self.assertIn("columns: Priority", app.toast_state["text"])
+
+    def test_saved_columns_are_applied_when_the_config_loads(self):
+        d = tempfile.mkdtemp()
+        app, _ = fresh_in(d)
+        with open(os.path.join(d, "layout.json"), "w") as f:
+            json.dump({"_columns": {"ds": ["Priority"]}}, f)
+        cfg = {"columns": ["Status", "Priority", "Assignee"], "data_source_id": "ds"}
+        saved = app.read_json("layout.json").get("_columns", {}).get(cfg["data_source_id"])
+        self.assertEqual(saved, ["Priority"])
+
+    def test_the_picker_never_offers_the_title_or_the_status(self):
+        app, _ = fresh()
+        seen = {}
+        app.refresh_async = lambda *a, **k: None
+        app.checklist = lambda title, items, checked: seen.update(items=items) or None
+        app.pick_columns()
+        self.assertNotIn("Name", seen["items"])
+        self.assertNotIn("Status", seen["items"])
+        self.assertIn("Priority", seen["items"])

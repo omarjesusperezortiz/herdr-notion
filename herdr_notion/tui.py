@@ -27,7 +27,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "remove the newest filter pill, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("u", "undo the last status change (for a minute)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("c", "choose and order the table's columns"), ("u", "undo the last status change (for a minute)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -86,6 +86,7 @@ class App:
         self.hits = []  # clickable regions of the last drawing: (y, x0, x1, action, argument)
         self.focus = "list"  # "preview" while the arrow keys scroll the preview pane
         self.colors, self.pairs, self.sel_bg = False, {}, False  # filled by init_colors
+        self.cached_at = None  # ISO time of the saved list on screen while the fresh one loads
         self.toast_state = None  # {text, kind, until}: the message in the footer, with a color and a life
         self.undo = None  # the last status write(s), for u
         self.option_colors = {}  # property -> {option name: Notion color name}
@@ -114,6 +115,10 @@ class App:
         self.groups = {}
         self.fidx = 0
         self.cfg = cfg
+        saved = self.read_json("layout.json").get("_columns", {}).get(cfg["data_source_id"])
+        if saved:
+            cfg["columns"] = [c for c in saved if isinstance(c, str)]
+            self.client.want = set(cfg["columns"])
         self.set_mouse(cfg["mouse"])
 
     # ------------------------------------------------------------ mouse (opt-in)
@@ -279,6 +284,7 @@ class App:
         else:
             self.sort_mode, self.sort_rev = idx, False
         self.apply_sort()
+        self.save_layout()
         self.msg = "sorted by %s%s" % (self.SORTS[idx][1], " (reversed)" if self.sort_rev else "")
 
     def sort_arrow(self, col):
@@ -453,7 +459,7 @@ class App:
         text = nt.prop_text(page["properties"].get(self.cfg["status_property"]))
         return (self.status_order.get(text, 999), text.lower())
 
-    def apply_list(self, schema, body, res):
+    def apply_list(self, schema, body, res, cached=False):
         self.groups = nt.status_groups(schema, self.cfg["status_property"])
         self.option_colors = nt.select_colors(schema)
         self.set_status_order(schema)
@@ -466,7 +472,73 @@ class App:
         self.apply_sort()
         self.sel = self.top = 0  # a new list starts at its first row, whatever the sort did
         self.baseline_seen()
+        if not cached:
+            self.cached_at = None
+            self.save_list_cache(schema, res)
         self.last_refresh = time.time()
+
+    # ------------------------------------------------------------ layout kept per tab
+    def apply_layout(self):
+        """Sort, grouping, compact rows and the preview pane of the current tab, as you left them (defaults for a new tab)."""
+        saved = self.read_json("layout.json").get(self.list_cache_key(), {})
+        self.sort_mode = int(saved.get("sort", 0)) % len(self.SORTS)
+        self.sort_rev = bool(saved.get("rev", False))
+        self.group = bool(saved.get("group", False))
+        self.compact = bool(saved.get("compact", False))
+        self.preview_on = bool(saved.get("preview", True))
+        self.collapsed, self.hdr = set(), None
+
+    def save_layout(self):
+        data = self.read_json("layout.json")
+        data[self.list_cache_key()] = {"sort": self.sort_mode, "rev": self.sort_rev, "group": self.group,
+                                       "compact": self.compact, "preview": self.preview_on}
+        self.write_json("layout.json", data)
+
+    # ------------------------------------------------------------ the last list, kept on disk for an instant start
+    CACHED_TABS = 8
+
+    def list_cache_key(self):
+        return "%s|%s" % (self.cfg["data_source_id"], self.cfg["filters"][self.fidx]["name"])
+
+    def read_json(self, name):
+        try:
+            with open(state_file(name), encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def write_json(self, name, data):
+        try:
+            os.makedirs(os.path.dirname(state_file("x")), exist_ok=True)
+            tmp = state_file(name + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, state_file(name))
+        except OSError:
+            pass
+
+    def save_list_cache(self, schema, res):
+        """Keep the first page of a plain tab (no search, no server-side status) for the next start."""
+        if not self.cfg.get("cache", True) or self.query or self.server_status or not res.get("results"):
+            return
+        data = self.read_json("list-cache.json")
+        data[self.list_cache_key()] = {"at": datetime.now(timezone.utc).isoformat(), "schema": schema,
+                                       "pages": res["results"][:self.cfg["page_size"]]}
+        for key in sorted(data, key=lambda k: data[k].get("at", ""), reverse=True)[self.CACHED_TABS:]:
+            del data[key]
+        self.write_json("list-cache.json", data)
+
+    def show_cached(self):
+        """Draw the saved list of the current tab at once (dimmed while the fresh one loads). True when there was one."""
+        if not self.cfg.get("cache", True):
+            return False
+        entry = self.read_json("list-cache.json").get(self.list_cache_key())
+        if not entry or not entry.get("pages"):
+            return False
+        self.apply_list(entry["schema"], {}, {"results": entry["pages"], "has_more": False, "cursor": None}, cached=True)
+        self.cached_at = entry.get("at")
+        return True
 
     def refresh(self):
         """Blocking load, for flows that need the list right away."""
@@ -570,6 +642,63 @@ class App:
             today = self.now().replace(hour=0, minute=0, second=0, microsecond=0)
             return bool(t) and today <= t <= today + timedelta(days=7) and self.status_kind(page) != "done"
         return True
+
+    def checklist(self, title, items, checked):
+        """Tick any of `items` (space), reorder the ticked ones (J K), Enter keeps; returns the ticked names in order, or None."""
+        order = [i for i in checked if i in items] + [i for i in items if i not in checked]
+        on = set(c for c in checked if c in items)
+        sel = 0
+        while True:
+            h, w = self.scr.getmaxyx()
+            bw = min(w - 2, max([nt.cell_width(title) + 6, 36] + [nt.cell_width(i) + 10 for i in items]))
+            bh = min(h - 2, len(order) + 4)
+            win = curses.newwin(bh, bw, (h - bh) // 2, (w - bw) // 2)
+            win.keypad(True)
+            win.box()
+            win.addnstr(0, 2, " %s " % title, bw - 4, curses.A_BOLD)
+            room = bh - 4
+            first = max(0, min(sel - room + 1, len(order) - room))
+            for r, name in enumerate(order[first:first + room]):
+                row = " [%s] %s" % ("x" if name in on else " ", nt.pad(name, bw - 8))
+                win.addstr(1 + r, 1, row[:bw - 2], curses.A_REVERSE if first + r == sel else 0)
+            win.addnstr(bh - 2, 2, "space ticks · J K moves · ⏎ saves · Esc", bw - 4, curses.A_DIM)
+            win.refresh()
+            k = win.getch()
+            if k in (27, ord("q")):
+                return None
+            if k in (10, 13, curses.KEY_ENTER):
+                return [n for n in order if n in on]
+            if k in (curses.KEY_DOWN, ord("j")):
+                sel = min(sel + 1, len(order) - 1)
+            elif k in (curses.KEY_UP, ord("k")):
+                sel = max(sel - 1, 0)
+            elif k == ord(" "):
+                on ^= {order[sel]}
+            elif k in (ord("J"), ord("K")):
+                j = sel + (1 if k == ord("J") else -1)
+                if 0 <= j < len(order):
+                    order[sel], order[j] = order[j], order[sel]
+                    sel = j
+
+    def pick_columns(self):
+        """c: choose which properties the table shows, and in what order. Kept in layout.json, not in config.toml."""
+        schema = self.client.discover()
+        skip = {self.cfg["status_property"], self.title_prop or nt.title_property_name(schema.get("properties", {}))}
+        names = [n for n, p in schema["properties"].items() if n not in skip and p.get("type") != "title"]
+        cur = [c for c in self.cfg["columns"] if c in names]
+        chosen = self.checklist("Columns", names, cur)
+        if chosen is None:
+            return
+        self.set_columns(chosen)
+        self.toast("columns: %s" % (", ".join(chosen) or "none"))
+
+    def set_columns(self, columns):
+        self.cfg["columns"] = list(columns)
+        self.client.want = set(columns) | {self.cfg["status_property"]}
+        data = self.read_json("layout.json")
+        data["_columns"] = {self.cfg["data_source_id"]: list(columns)}
+        self.write_json("layout.json", data)
+        self.refresh_async("Loading the new columns…")
 
     def pick_quick_filter(self):
         names = ["(no quick filter)"] + [label for _, label in self.QUICK]
@@ -773,6 +902,7 @@ class App:
             self.msg = "the pane is too narrow for a preview (needs %d columns)" % self.PREVIEW_MIN_WIDTH
             return
         self.preview_on = not self.preview_on
+        self.save_layout()
         self.focus = "list"
         self.msg = "preview on" if self.preview_on else "preview off: p brings it back"
 
@@ -991,6 +1121,8 @@ class App:
     def draw_tabs(self, w):
         self.scr.addnstr(0, 0, " Notion ", w - 1, curses.A_BOLD)
         extras = ""
+        if self.cached_at:
+            extras += " · cached %s ago" % (nt.relative_time(self.cached_at) or "?")
         if self.query:
             extras += ' · / "%s"' % self.query
         if self.live:
@@ -2344,6 +2476,8 @@ class App:
             self.status_filter = ""
             self.quick = ""
             self.server_status = False
+            self.apply_layout()
+            self.show_cached()
             self.refresh_async("Loading %s…" % self.cfg["filters"][idx]["name"])
 
     def search(self):
@@ -2513,7 +2647,7 @@ class App:
             self.msg = "tabs saved"
 
     PALETTE = [("Change status", "s"), ("Delegate to an agent", "d"), ("Edit a property", "e"), ("New page", "n"),
-               ("Show one status ([ ] moves along them)", "F"), ("Quick filter: changed today, no assignee, due…", "Q"), ("Board: a column per status", "B"), ("Open a linked page", "L"), ("Branch (worktree) for this ticket", "w"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
+               ("Show one status ([ ] moves along them)", "F"), ("Quick filter: changed today, no assignee, due…", "Q"), ("Columns: choose and order", "c"), ("Board: a column per status", "B"), ("Open a linked page", "L"), ("Branch (worktree) for this ticket", "w"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
                ("Notion views", "V"), ("Sort", "O"), ("Group by status", "g"), ("Fold or unfold a group", "-"), ("Compact rows", "z"),
                ("Switch database", "D"), ("Refresh", "r"), ("Open in browser", "o"), ("Copy the link", "y"),
                ("Mouse on or off", "M"), ("Connection and sign-in", "S"), ("Help: every key", "?")]
@@ -2909,6 +3043,8 @@ class App:
             return
         signed_in = bool(oauth.load())
         if signed_in:
+            self.apply_layout()
+            self.show_cached()
             self.refresh_async("Loading your pages…")
         self.splash()  # the intro always plays first, loading in the background when there is a login
         if not signed_in and not self.require_sign_in("Sign in to Notion to see your pages."):
@@ -3068,6 +3204,8 @@ class App:
             self.toggle_board()
         elif k == ord("Q"):
             self.guard(self.pick_quick_filter)
+        elif k == ord("c"):
+            self.guard(self.pick_columns)
         elif k == ord("V"):
             self.guard(self.pick_view)
         elif k == ord("x"):
@@ -3082,6 +3220,7 @@ class App:
             self.guard(self.palette)
         elif k == ord("z"):
             self.compact = not self.compact
+            self.save_layout()
             self.msg = "compact: the colored bar shows the status" if self.compact else "table: status word on every row"
         elif k == ord("n"):
             self.guard(self.new_page)
@@ -3090,6 +3229,7 @@ class App:
         elif k == ord("O"):
             self.sort_mode, self.sort_rev = (self.sort_mode + 1) % len(self.SORTS), False
             self.apply_sort()
+            self.save_layout()
             self.msg = "sorted by %s" % self.SORTS[self.sort_mode][1]
         elif k == ord("g"):  # one key, three states: list, groups open, groups folded
             if not self.group:
@@ -3103,6 +3243,7 @@ class App:
                 self.group, self.collapsed = False, set()
                 self.msg = "plain list"
             self.apply_sort()
+            self.save_layout()
         elif k == ord("r"):
             self.refresh_async("Refreshing…")
         elif k == ord("R"):
