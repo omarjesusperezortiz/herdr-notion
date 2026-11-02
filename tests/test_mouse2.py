@@ -395,3 +395,57 @@ class MouseMask(unittest.TestCase):
         mask = mm.call_args[0][0]
         for bit in (curses.BUTTON1_PRESSED, app.RELEASE, app.RIGHT_CLICK, app.WHEEL_UP, app.WHEEL_DOWN, app.MODIFIERS):
             self.assertTrue(mask & bit)
+
+
+class WheelDownWorkaround(unittest.TestCase):
+    """macOS system Python (ncurses 6.0) raises from getmouse() when the wheel turns down."""
+
+    def wheel_down_by_error(self, app):
+        with mock.patch("curses.getmouse", side_effect=curses.error("no event")):
+            return app.send_key(curses.KEY_MOUSE)
+
+    def test_the_error_counts_as_a_wheel_down_on_the_list(self):
+        app, _ = fresh(h=28, w=100)
+        app.sel = 0
+        self.wheel_down_by_error(app)
+        self.assertEqual(app.sel, 3)  # three rows, like any wheel notch
+
+    def test_after_a_click_it_scrolls_the_pane_the_pointer_was_last_in(self):
+        app, _ = fresh(h=28, w=150)
+        app.cache[app.pages[0]["id"]] = ["line %d" % i for i in range(80)]
+        app.draw_list()
+        event(app, 130, 8, app.WHEEL_UP)  # the pointer is over the preview
+        app.pscroll = 0
+        self.wheel_down_by_error(app)
+        self.assertGreater(app.pscroll, 0)
+
+    def test_without_any_earlier_event_the_focused_pane_scrolls(self):
+        app, _ = fresh(h=28, w=150)
+        app.cache[app.pages[0]["id"]] = ["line %d" % i for i in range(80)]
+        app.draw_list()
+        app.focus = "preview"
+        self.wheel_down_by_error(app)
+        self.assertGreater(app.pscroll, 0)
+
+    def test_it_scrolls_the_page_view(self):
+        app, _ = fresh(h=28, w=100)
+        app.detail = {"page": app.pages[0], "lines": [], "body": "x\n" * 100}
+        app.dscroll = 0
+        self.wheel_down_by_error(app)
+        self.assertEqual(app.dscroll, 3)
+
+    def test_a_popup_moves_down_on_it(self):
+        app, _ = fresh(h=30, w=100)
+        queue = iter([(curses.KEY_MOUSE, "err"), (10, None)])
+        cur = {}
+
+        class Win(FakeWin):
+            def getch(self):
+                k, m = next(queue)
+                cur["m"] = m
+                return k
+
+        FakeWin.made = []
+        with mock.patch("curses.newwin", lambda *a: Win(*a)), mock.patch("curses.getmouse", side_effect=curses.error("no event")):
+            got = app.popup("Pick", ["One", "Two", "Three"])
+        self.assertEqual(got, 1)

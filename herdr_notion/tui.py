@@ -54,6 +54,7 @@ class App:
         self.sort_rev = False  # a second click on a column header reverses the order
         self.mark_anchor = None  # id of the page last marked with a click (a Shift/Alt click extends from it)
         self.drag = None  # (column, card) a board drag started on
+        self.pointer = None  # where the mouse last was (x, y), for a wheel turn the terminal library cannot place
         self.seen = self.load_seen()  # page id -> last edit time already looked at (for the unread dot)
         self.last_refresh = time.time()
         self.sel_id, self.sel_changed = None, time.time()
@@ -131,11 +132,17 @@ class App:
                     if self.mouse_on else "mouse off")
 
     def read_mouse(self):
-        """(x, y, button state) of the pending mouse event, or None."""
+        """(x, y, button state) of the pending mouse event.
+
+        Some builds (macOS system Python: ncurses 6.0 with four mouse buttons) cannot describe the wheel turning
+        down, the fifth button: getmouse() raises instead. Mouse events are only asked for buttons, clicks and wheel,
+        so that error is a wheel down. Its position is lost; the last pointer position stands in for it."""
         try:
             _, x, y, _, b = curses.getmouse()
         except curses.error:
-            return None
+            x, y = self.pointer if self.pointer else ((self.scr.getmaxyx()[1] - 1) if self.focus == "preview" else 0, 3)
+            return x, y, self.WHEEL_DOWN
+        self.pointer = (x, y)
         return x, y, b
 
     HINT_KEYS = {"⏎": 10, "Tab": 9, "Esc": 27, "Space": ord(" "), "→": curses.KEY_RIGHT, "←": curses.KEY_LEFT}

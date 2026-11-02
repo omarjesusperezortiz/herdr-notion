@@ -25,7 +25,7 @@ Source: the UI proposal. Each task is done only when its tests pass (`python3 -m
 
 Last: README key table, in-app help, push, report what was tested only against fakes.
 
-Not built from T4: clicking a footer hint. Wheel-down relies on ncurses reporting button 5; checked only with fake events.
+Not built from T4: clicking a footer hint. Wheel-down: macOS system Python (ncurses 6.0) cannot report button 5 and getmouse() raises; the app treats that error as a wheel down at the last pointer position (checked with real mouse bytes in a pty).
 
 # Round 2 (from the "next round" artifact)
 
