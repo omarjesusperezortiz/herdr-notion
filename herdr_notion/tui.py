@@ -27,7 +27,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "remove the newest filter pill, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("X", "close the pane of this ticket's finished agent (asks first)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("Y", "next theme: default, light, high-contrast, mono (kept in the config)"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("X", "close the pane of this ticket's finished agent (asks first)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -86,6 +86,7 @@ class App:
         self.hits = []  # clickable regions of the last drawing: (y, x0, x1, action, argument)
         self.focus = "list"  # "preview" while the arrow keys scroll the preview pane
         self.colors, self.pairs, self.sel_bg = False, {}, False  # filled by init_colors
+        self.colors_ready = False  # the screen is up, so a new theme can be applied at once
         self.used_keys = set(self.read_json("usage.json").get("keys", []))  # keys you have pressed (for the tip line)
         self.synced_at, self.offline, self.me_name = None, "", ""  # when the list last came from Notion, why it did not, who is signed in
         self.dtab, self.drow = 0, 0  # section of the page view (Body, Comments, Related) and the selected linked page
@@ -127,6 +128,8 @@ class App:
             cfg["columns"] = [c for c in saved if isinstance(c, str)]
             self.client.want = set(cfg["columns"])
         self.set_mouse(cfg["mouse"])
+        if self.colors_ready:
+            self.init_colors()
 
     # ------------------------------------------------------------ mouse (opt-in)
     WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0x80000)
@@ -915,6 +918,7 @@ class App:
 
     # ------------------------------------------------------------ preview pane and auto-refresh
     PREVIEW_MIN_WIDTH = 120
+    NARROW_WIDTH = 70
 
     def wide(self):
         """True when the preview pane is drawn: it is switched on (p) and the pane is wide enough."""
@@ -992,31 +996,41 @@ class App:
     PAIR = {"todo": 1, "progress": 2, "done": 3, "": 0}
 
     def init_colors(self):
-        """Color pairs for every role (palette.KEYS), plain and on the selection background. 256 colors when the terminal
-        has them, the 8 base colors otherwise; with NO_COLOR none, and the glyphs still carry the meaning."""
+        """Color pairs for every role (palette.KEYS), plain and on the selection background, for the configured theme.
+        256 colors when the terminal has them, the 8 base colors otherwise; with NO_COLOR or the mono theme none, and
+        the glyphs still carry the meaning."""
         self.colors, self.pairs, self.sel_bg = False, {}, False
-        if os.environ.get("NO_COLOR"):
+        theme = pl.theme_palette((self.cfg or {}).get("theme", "default"))
+        if os.environ.get("NO_COLOR") or theme is None:
             return
+        xterm, selection = theme
         try:
             curses.start_color()
             curses.use_default_colors()
             wide = curses.COLORS >= 256
-            bg = (pl.herdr_selection_bg() or pl.DEFAULT_SELECTION) if wide else -1
             n = 1
             for key in pl.KEYS + ("plain",):
-                fg = -1 if key == "plain" else pl.XTERM[key] if wide else pl.BASE8[key]
+                fg = -1 if key == "plain" else xterm[key] if wide else pl.BASE8[key]
                 curses.init_pair(n, fg, -1)
                 self.pairs[(key, False)] = n
                 n += 1
-                if wide:
-                    curses.init_pair(n, fg, bg)
+                if wide and selection is not None:
+                    curses.init_pair(n, fg, selection)
                     self.pairs[(key, True)] = n
                     n += 1
-            curses.init_pair(n, curses.COLOR_BLACK, pl.XTERM["accent"] if wide else curses.COLOR_CYAN)  # the active tab
+            curses.init_pair(n, curses.COLOR_BLACK, xterm["accent"] if wide else curses.COLOR_CYAN)  # the active tab
             self.pairs[("tab", False)] = n
-            self.colors, self.sel_bg = True, wide
+            self.colors, self.sel_bg = True, wide and selection is not None
         except curses.error:
             self.colors = False
+
+    def cycle_theme(self):
+        """Y: the next theme (default, light, high-contrast, mono), kept in config.toml."""
+        name = pl.next_theme(self.cfg.get("theme", "default"))
+        self.write_config_value("theme", name)
+        self.cfg["theme"] = name
+        self.init_colors()
+        self.toast("theme: %s" % name, "info", 4)
 
     def paint(self, key):
         """Attribute of a role color (palette.KEYS, 'plain' or 'tab'); without colors, grey is dim and the rest plain."""
@@ -1305,7 +1319,8 @@ class App:
         # Columns right of the title, in priority order: status, other columns, edited.
         # They are dropped from the right until the title has at least 20 columns.
         extra = [c for c in self.cfg["columns"] if c != self.cfg["status_property"]]
-        cols = ([] if self.compact else [("STATUS", 14)]) + [(c.upper(), min(14, max(len(c), 6))) for c in extra] \
+        narrow = w < self.NARROW_WIDTH  # under 70 columns: the list alone, status shown as a glyph before the title
+        cols = ([] if (self.compact or narrow) else [("STATUS", 14)]) + [(c.upper(), min(14, max(len(c), 6))) for c in extra] \
             + ([("AGENT", 18)] if any(p["id"] in self.delegations or p["id"] in self.found for p in self.pages) else []) + [("EDITED", 8)]
         while cols and tw_total - 4 - sum(cw + 2 for _, cw in cols) < 20:
             cols.pop()
@@ -1319,7 +1334,7 @@ class App:
             if n in arrow:
                 self.hits.append((hy, hx, hx + wd, "sort", arrow[n]))
             hx += wd + 2
-        peek = 4 if (h >= 20 and not wide) else 0  # the selected page in full, since titles get clipped in the table
+        peek = 4 if (h >= 20 and not wide and not narrow) else 0  # the selected page in full, since titles get clipped in the table
         rows = h - 6 - peek - po
         disp = self.build_display()
         if self.hdr and self.hdr not in self.header_key.values():
@@ -1359,7 +1374,12 @@ class App:
                 self.scr.addnstr(y, 1, "+", 1, rattr(None, curses.A_BOLD))
             elif self.unread(pg):
                 self.scr.addnstr(y, 1, "•", 1, rattr("accent", curses.A_BOLD))
-            self.scr.addstr(y, 2, nt.clip(nt.page_title(pg), tw), rattr(None, curses.A_BOLD if on else 0))
+            if narrow:  # the status glyph stands where the STATUS column would be
+                name = nt.prop_text(pg["properties"].get(self.cfg["status_property"]))
+                self.scr.addstr(y, 2, self.status_mark(name), rattr(skey))
+                self.scr.addstr(y, 4, nt.clip(nt.page_title(pg), max(tw - 2, 4)), rattr(None, curses.A_BOLD if on else 0))
+            else:
+                self.scr.addstr(y, 2, nt.clip(nt.page_title(pg), tw), rattr(None, curses.A_BOLD if on else 0))
             x = 2 + tw
             for n, cw in cols:
                 x += 2
@@ -3121,7 +3141,7 @@ class App:
             self.refresh_async("Searching…")
 
     PALETTE = [("Change status", "s"), ("Delegate to an agent", "d"), ("Edit a property", "e"), ("New page", "n"),
-               ("Show one status ([ ] moves along them)", "F"), ("Quick filter: changed today, no assignee, due…", "Q"), ("Columns: choose and order", "c"), ("Board: a column per status", "B"), ("Open a linked page", "L"), ("Branch (worktree) for this ticket", "w"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
+               ("Show one status ([ ] moves along them)", "F"), ("Quick filter: changed today, no assignee, due…", "Q"), ("Columns: choose and order", "c"), ("Theme: next (default, light, high contrast, mono)", "Y"), ("Board: a column per status", "B"), ("Open a linked page", "L"), ("Branch (worktree) for this ticket", "w"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
                ("Notion views", "V"), ("Sort", "O"), ("Group by status", "g"), ("Fold or unfold a group", "-"), ("Compact rows", "z"),
                ("Switch database", "D"), ("Refresh", "r"), ("Open in browser", "o"), ("Copy the link", "y"),
                ("Mouse on or off", "M"), ("Connection and sign-in", "S"), ("Help: every key", "?")]
@@ -3505,6 +3525,7 @@ class App:
         curses.curs_set(0)
         self.scr.keypad(True)
         self.init_colors()
+        self.colors_ready = True
         try:
             try:
                 self.load_config()
@@ -3696,6 +3717,8 @@ class App:
             self.guard(self.pick_quick_filter)
         elif k == ord("c"):
             self.guard(self.pick_columns)
+        elif k == ord("Y"):
+            self.guard(self.cycle_theme)
         elif k == ord("V"):
             self.guard(self.pick_view)
         elif k == ord("x"):

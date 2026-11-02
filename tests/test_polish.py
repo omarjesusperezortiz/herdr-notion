@@ -1236,3 +1236,134 @@ class EmptyStatesAndTips(unittest.TestCase):
         app, scr = fresh(h=12, w=110)
         app.draw_list()
         self.assertFalse(scr.has("tip: "))
+
+
+from herdr_notion import palette as pl
+from herdr_notion import config as cfgmod
+
+
+class Themes(unittest.TestCase):
+    def init(self, theme, colors=256):
+        app, _ = fresh()
+        app.cfg = dict(app.cfg, theme=theme)
+        pairs = []
+        env = {k: v for k, v in os.environ.items() if k != "NO_COLOR"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch("curses.start_color"), mock.patch("curses.use_default_colors"), \
+                mock.patch("curses.COLORS", colors, create=True), mock.patch("curses.init_pair", lambda *a: pairs.append(a)), \
+                mock.patch("herdr_notion.palette.herdr_selection_bg", return_value=None):
+            app.init_colors()
+        return app, pairs
+
+    def test_the_theme_list_and_unknown_names(self):
+        self.assertEqual(pl.THEMES, ("default", "light", "high-contrast", "mono"))
+        self.assertEqual(pl.theme_name("nonsense"), "default")
+        self.assertEqual(pl.next_theme("default"), "light")
+        self.assertEqual(pl.next_theme("mono"), "default")
+        self.assertEqual(pl.next_theme("nonsense"), "light")
+
+    def test_light_uses_deeper_colors_and_a_pale_selection(self):
+        app, pairs = self.init("light")
+        red = next(p for p in pairs if p[0] == app.pairs[("red", False)])
+        sel = next(p for p in pairs if p[0] == app.pairs[("red", True)])
+        self.assertEqual(red[1], pl.LIGHT["red"])
+        self.assertEqual(sel[2], pl.LIGHT_SELECTION)
+        self.assertTrue(app.sel_bg)
+
+    def test_high_contrast_uses_bright_colors_and_reverse_video_for_the_selection(self):
+        app, pairs = self.init("high-contrast")
+        self.assertTrue(app.colors)
+        self.assertFalse(app.sel_bg)
+        self.assertNotIn(("red", True), app.pairs)
+        self.assertEqual(app.on_attr(), curses.A_REVERSE)
+        red = next(p for p in pairs if p[0] == app.pairs[("red", False)])
+        self.assertEqual(red[1], 9)
+
+    def test_mono_turns_the_colors_off_but_the_marks_stay(self):
+        app, pairs = self.init("mono")
+        self.assertFalse(app.colors)
+        self.assertEqual(pairs, [])
+        self.assertEqual(app.paint("red"), 0)
+        self.assertEqual(app.paint("grey"), curses.A_DIM)
+        self.assertEqual(app.cell_style("Priority", "High")[0], "!! High")
+
+    def test_default_is_unchanged(self):
+        app, pairs = self.init("default")
+        red = next(p for p in pairs if p[0] == app.pairs[("red", False)])
+        self.assertEqual(red[1], pl.XTERM["red"])
+        sel = next(p for p in pairs if p[0] == app.pairs[("red", True)])
+        self.assertEqual(sel[2], pl.DEFAULT_SELECTION)
+
+    def test_an_8_color_terminal_folds_every_theme_back_to_the_base_colors(self):
+        for theme in ("default", "light", "high-contrast"):
+            app, pairs = self.init(theme, colors=8)
+            self.assertTrue(all(p[1] < 8 for p in pairs), theme)
+
+    def test_the_config_accepts_only_known_themes(self):
+        for name, want in (("light", "light"), ("high-contrast", "high-contrast"), ("neon", "default")):
+            self.assertEqual(cfgmod.normalize({"notion": {"data_source_id": "x", "theme": name}})["theme"], want)
+
+    def test_y_cycles_the_theme_saves_it_and_applies_it(self):
+        app, _ = fresh()
+        written = []
+        app.write_config_value = lambda key, value: written.append((key, value))
+        calls = []
+        app.init_colors = lambda: calls.append(1)
+        app.list_key(ord("Y"))
+        self.assertEqual(written, [("theme", "light")])
+        self.assertEqual(app.cfg["theme"], "light")
+        self.assertEqual(calls, [1])
+        self.assertEqual(app.toast_state["text"], "theme: light")
+        app.list_key(ord("Y"))
+        self.assertEqual(written[-1], ("theme", "high-contrast"))
+
+    def test_the_theme_is_in_the_help_and_the_palette(self):
+        from herdr_notion.tui import HELP, App
+        self.assertTrue(any(k == "Y" for _, items in HELP for k, _ in items))
+        self.assertTrue(any(k == "Y" for _, k in App.PALETTE))
+
+
+class ThreeWidths(unittest.TestCase):
+    def test_under_70_columns_it_is_the_list_alone_with_a_status_glyph(self):
+        app, scr = fresh(h=24, w=60)
+        app.draw_list()
+        self.assertFalse(scr.has("STATUS"))
+        self.assertFalse(scr.has("│"))  # no preview divider
+        row = next(y for y in range(3, 12) if "Alpha" in "".join(scr.grid[y]) or "Echo" in "".join(scr.grid[y]))
+        line = "".join(scr.grid[row])
+        self.assertRegex(line[2:6], r"[○◐◑◕✓⊘] ")
+        # the page in full (the peek) is not drawn at this width
+        self.assertEqual([y for y in range(15, 20) if "edited" in scr.row(y)], [])
+
+    def test_from_70_to_120_the_list_has_a_peek_of_the_selected_page(self):
+        app, scr = fresh(h=24, w=90)
+        app.draw_list()
+        self.assertTrue(scr.has("STATUS"))
+        self.assertTrue(any("edited" in scr.row(y) for y in range(15, 24)))
+        self.assertFalse(scr.has("│"))
+
+    def test_from_120_the_preview_pane_is_beside_the_list(self):
+        app, scr = fresh(h=24, w=150)
+        app.cache[app.pages[0]["id"]] = ["body text"]
+        app.draw_list()
+        self.assertTrue(scr.has("│"))
+        self.assertTrue(scr.has("body text"))
+
+    def test_the_glyph_is_in_the_status_color_on_a_narrow_list(self):
+        app, scr = fresh(h=24, w=60)
+        app.colors, app.sel_bg = True, False
+        app.pairs = {(k, False): n + 1 for n, k in enumerate(pl.KEYS + ("plain", "tab"))}
+        with mock.patch("curses.color_pair", lambda n: n << 8):
+            app.draw_list()
+        row = next(y for y in range(3, 12) if "Alpha" in "".join(scr.grid[y]))
+        self.assertEqual(scr.attrs[row][2] >> 8 & 0xff, app.pairs[(app.status_key("Done"), False)])
+        self.assertEqual("".join(scr.grid[row])[2], "✓")
+
+    def test_a_narrow_list_still_selects_opens_and_scrolls(self):
+        app, scr = fresh(h=24, w=60)
+        app.draw_list()
+        app.list_key(ord("j"))
+        self.assertEqual(app.sel, 1)
+        opened = []
+        app.open_page = lambda p: opened.append(p["id"])
+        app.list_key(10)
+        self.assertEqual(opened, [app.pages[1]["id"]])

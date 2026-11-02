@@ -209,6 +209,20 @@ else a quiet grey (reverse video on terminals without 256 colors). To pin a stat
 "Review" = "orange"      # grey red blue purple teal amber orange green accent
 ```
 
+Themes: `theme = "default"` under `[notion]`, or `Y` to cycle (kept in the config). `default` follows your terminal's palette and herdr's
+selection color; `light` uses deeper colors for a light background; `high-contrast` uses the bright ANSI colors and reverse video for the
+selection; `mono` uses no color at all (glyphs and `!!` marks only, like `NO_COLOR=1`).
+
+## Header, empty lists and tips
+
+The top right says who is signed in and how long ago the list came from Notion (`Ada · synced 12s ago`; `cached 3h ago` while the saved
+list is still on screen). When a refresh fails an offline banner replaces the status chips, the rows dim, and `r` retries. An empty list
+names the filters in play and the keys that remove them. When the footer has nothing else to say, one line suggests a key you have not
+used yet (`usage.json` remembers which), rotating every 40 seconds.
+
+Three widths: under 70 columns the list is alone and a status glyph stands before each title; from 70 it also shows the selected page
+in full under the list; from 120 the preview pane sits beside it (`p` hides it).
+
 ## Digest
 
 `python3 -m herdr_notion digest` (run it in the checkout) prints what changed in a tab since the last time you ran it: status

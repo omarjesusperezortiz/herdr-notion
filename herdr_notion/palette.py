@@ -99,3 +99,32 @@ def herdr_selection_bg(path=None):
         return None
     v = re.search(r"^\s*active_row_bg\s*=\s*[\"']([^\"']+)[\"']", m.group(1), re.M)
     return nearest_256(v.group(1)) if v else None
+
+
+THEMES = ("default", "light", "high-contrast", "mono")
+# for a light terminal background: deeper colors, a pale selection
+LIGHT = {"grey": 242, "red": 124, "blue": 25, "purple": 91, "teal": 30, "amber": 130, "orange": 166, "green": 28, "accent": 31}
+LIGHT_SELECTION = 254
+# the bright ANSI colors (9 to 15) for a high-contrast look; the selection stays reverse video
+HIGH = {"grey": 15, "red": 9, "blue": 12, "purple": 13, "teal": 14, "amber": 11, "orange": 11, "green": 10, "accent": 14}
+
+
+def theme_name(name):
+    return name if name in THEMES else "default"
+
+
+def theme_palette(name, herdr_path=None):
+    """(xterm colors by role, selection background or None for reverse video) of a theme; None for 'mono' (no colors).
+    'default' follows herdr's theme for the selection when it sets one."""
+    name = theme_name(name)
+    if name == "mono":
+        return None
+    if name == "light":
+        return LIGHT, LIGHT_SELECTION
+    if name == "high-contrast":
+        return HIGH, None
+    return XTERM, herdr_selection_bg(herdr_path) or DEFAULT_SELECTION
+
+
+def next_theme(name):
+    return THEMES[(THEMES.index(theme_name(name)) + 1) % len(THEMES)]

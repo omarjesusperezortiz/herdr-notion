@@ -56,7 +56,7 @@ def normalize(raw):
         "title_property": n.get("title_property", ""),
         "page_size": int(n.get("page_size", 50)),
         "mouse": bool(n.get("mouse", False)),
-        "theme": str(n.get("theme", "default")),
+        "theme": str(n.get("theme", "default")) if str(n.get("theme", "default")) in ("default", "light", "high-contrast", "mono") else "default",
         "cache": bool(n.get("cache", True)),
         "colors": {str(k): str(v) for k, v in (raw.get("colors") or {}).items()},
         "filters": raw.get("filters") or [{"name": "All"}],

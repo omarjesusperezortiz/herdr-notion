@@ -44,9 +44,11 @@ in-app help say how to use it. Order below is the build order. Writes to Notion 
 
 ## 7. Small ones
 
-- [ ] **A5 Freshness.** "synced 12s ago" and an offline banner.
-- [ ] **A7 Empty states and tips.** Messages naming the filters in play and the keys that clear them; a rotating tip line.
-- [ ] **A8 Themes.** `theme = default | light | high-contrast | mono`.
-- [ ] **A9 Three widths.** List only under 70 columns, list and peek from 70, list and preview from 120.
+- [x] **A5 Freshness.** "synced 12s ago" and an offline banner.
+- [x] **A7 Empty states and tips.** Messages naming the filters in play and the keys that clear them; a rotating tip line.
+- [x] **A8 Themes.** `theme = default | light | high-contrast | mono`, `Y` cycles it.
+- [x] **A9 Three widths.** List only under 70 columns, list and peek from 70, list and preview from 120.
 
-## Tested only against fakes (filled in at the end)
+## How it was tested
+
+Filled in at the end of the round.
