@@ -1087,3 +1087,82 @@ class TabLabel(unittest.TestCase):
         self.assertEqual(App.tab_label(plain), "Add dark mode")
         long = {"properties": {"Name": {"type": "title", "title": [{"plain_text": "x" * 80}]}}}
         self.assertLessEqual(len(App.tab_label(long)), 36)
+
+
+class Freshness(unittest.TestCase):
+    def test_the_header_says_who_and_how_long_ago_the_list_came_from_notion(self):
+        app, scr = fresh(h=20, w=120)
+        app.me_name = "Ada"
+        app.draw_list()
+        self.assertTrue(scr.has("Ada · synced just now"))
+        with mock.patch("time.time", return_value=app.synced_at + 12):
+            scr.clear()
+            app.draw_list()
+            self.assertTrue(scr.has("synced 12s ago"))
+        with mock.patch("time.time", return_value=app.synced_at + 4 * 60 + 5):
+            scr.clear()
+            app.draw_list()
+            self.assertTrue(scr.has("synced 4m ago"))
+
+    def test_without_a_name_it_is_just_the_time(self):
+        app, scr = fresh(h=20, w=120)
+        app.draw_list()
+        self.assertTrue(scr.has("synced just now"))
+        self.assertFalse(scr.has("·  synced"))
+
+    def test_cached_rows_say_cached_not_synced(self):
+        app, scr = fresh(h=20, w=120)
+        app.cached_at = "2026-10-30T09:00:00+00:00"
+        app.draw_list()
+        self.assertTrue(scr.has("cached"))
+        self.assertFalse(scr.has("synced"))
+
+    def run_failed_job(self, app, kind, error):
+        app.start_job("", lambda: (_ for _ in ()).throw(error), lambda r: None, kind)
+        deadline = time.time() + 2
+        while not app.job["done"] and time.time() < deadline:
+            time.sleep(0.005)
+        app.poll_job()
+
+    def test_a_failed_refresh_shows_the_banner_and_dims_the_rows_until_a_fresh_list_arrives(self):
+        app, scr = fresh(h=20, w=120)
+        self.run_failed_job(app, "list", nt.NotionError("Notion 503"))
+        self.assertIn("503", app.offline)
+        scr.clear()
+        app.draw_list()
+        self.assertTrue(scr.has("Cannot reach Notion · showing what was loaded · r retries"))
+        other = nt.page_title(app.pages[2])  # not the selected row
+        row = next(y for y in range(3, 12) if other in "".join(scr.grid[y]))
+        self.assertTrue(scr.attrs[row][10] & curses.A_DIM)
+        app.apply_list(app.client.discover(), {}, app.client.query({}))
+        self.assertEqual(app.offline, "")
+        scr.clear()
+        app.draw_list()
+        self.assertFalse(scr.has("Cannot reach Notion"))
+
+    def test_a_silent_background_failure_counts_too_but_a_herdr_failure_does_not(self):
+        app, _ = fresh()
+        self.run_failed_job(app, "silent", nt.NotionError("timeout"))
+        self.assertEqual(app.offline, "timeout")
+        app.offline = ""
+        self.run_failed_job(app, "agents", dg.HerdrError("no herdr"))
+        self.assertEqual(app.offline, "")
+
+    def test_the_banner_mentions_the_cache_when_that_is_what_is_shown(self):
+        app, scr = fresh(h=20, w=130)
+        app.cached_at = "2026-10-30T09:00:00+00:00"
+        app.offline = "Notion 503"
+        app.draw_list()
+        self.assertTrue(scr.has("(cached "))
+
+    def test_auto_refresh_marks_the_sync_and_learns_the_name(self):
+        app, _ = fresh()
+        app.last_refresh = 0
+        ran = {}
+        app.start_job = lambda label, work, done, kind="list": ran.update(r=work(), done=done)
+        app.client.whoami = lambda: {"workspace": "W", "user": "Ada"}
+        app.synced_at = None
+        app.auto_refresh()
+        ran["done"](ran["r"])
+        self.assertEqual(app.me_name, "Ada")
+        self.assertIsNotNone(app.synced_at)

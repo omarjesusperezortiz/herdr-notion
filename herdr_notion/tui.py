@@ -86,6 +86,7 @@ class App:
         self.hits = []  # clickable regions of the last drawing: (y, x0, x1, action, argument)
         self.focus = "list"  # "preview" while the arrow keys scroll the preview pane
         self.colors, self.pairs, self.sel_bg = False, {}, False  # filled by init_colors
+        self.synced_at, self.offline, self.me_name = None, "", ""  # when the list last came from Notion, why it did not, who is signed in
         self.dtab, self.drow = 0, 0  # section of the page view (Body, Comments, Related) and the selected linked page
         self.preview_mode = "ticket"  # a switches the preview to the agent's terminal
         self.agent_text = {}  # pane id -> (time fetched, lines)
@@ -436,6 +437,8 @@ class App:
         if "error" in job:
             e = job["error"]
             if isinstance(e, (nt.NotionError, dg.HerdrError, cfgmod.ConfigError, oauth.OAuthError)):
+                if job["kind"] in ("list", "more", "silent") and not isinstance(e, dg.HerdrError):
+                    self.offline = str(e)  # the rows on screen are what was loaded earlier
                 self.report(e)
                 return
             raise e
@@ -491,6 +494,7 @@ class App:
         self.baseline_seen()
         if not cached:
             self.cached_at = None
+            self.synced_at, self.offline = time.time(), ""
             self.save_list_cache(schema, res)
         self.last_refresh = time.time()
 
@@ -956,9 +960,16 @@ class App:
         def work():
             schema = self.client.discover()
             body = self.build_list_query(schema)
-            return schema, body, self.client.query(body)
+            res = self.client.query(body)
+            if not self.me_name:
+                try:
+                    self.me_name = self.client.whoami().get("user", "")
+                except (nt.NotionError, AttributeError):
+                    pass
+            return schema, body, res
 
         def done(r):
+            self.synced_at, self.offline = time.time(), ""
             schema, body, res = r
             fresh = res.get("results", [])
             ids = {p["id"] for p in fresh}
@@ -1154,7 +1165,11 @@ class App:
             extras += " · sort: %s" % self.SORTS[self.sort_mode][1]
         if self.group:
             extras += " · grouped"
-        right = "%s%d%s pages%s " % (self.spin() + " " if self.visible_job() else "", len(self.pages), "+" if self.has_more else "", extras)
+        sync = ""
+        if self.synced_at and not self.cached_at:
+            ago = time.time() - self.synced_at
+            sync = "%ssynced %s " % ((self.me_name + " · ") if self.me_name else "", "just now" if ago < 5 else nt.elapsed_text(ago) + " ago")
+        right = "%s%s%d%s pages%s " % (self.spin() + " " if self.visible_job() else "", sync + "· " if sync else "", len(self.pages), "+" if self.has_more else "", extras)
         self.scr.addnstr(0, max(9, w - 1 - len(right)), right[:max(0, w - 10)], len(right), curses.A_DIM)
         # as many tabs as fit between the name and the count, always including the active one
         avail = w - 9 - len(right) - 2
@@ -1260,7 +1275,11 @@ class App:
         self.scr.erase()
         self.hits = []
         self.draw_tabs(w)
-        self.draw_chips(1, w)
+        if self.offline:
+            banner = " ⚠ Cannot reach Notion · showing what was loaded%s · r retries " % (" (cached %s ago)" % nt.relative_time(self.cached_at) if self.cached_at else "")
+            self.scr.addnstr(1, 1, banner, w - 2, self.paint("red") | curses.A_BOLD)
+        else:
+            self.draw_chips(1, w)
         pills = self.filter_pills()
         po = 1 if pills else 0  # a row of removable filter pills pushes the table down by one
         if pills:
@@ -1295,7 +1314,7 @@ class App:
             self.top = max(0, sel_d - (1 if sel_d > 0 and disp[sel_d - 1][0] == "h" else 0))
         if sel_d >= self.top + rows:
             self.top = sel_d - rows + 1
-        stale = bool(self.job and self.job["kind"] == "list" and self.pages)
+        stale = bool((self.job and self.job["kind"] == "list" and self.pages) or (self.offline and self.pages))
         for r, (kind, i) in enumerate(disp[self.top:self.top + rows]):
             y = y0 + r
             if kind == "h":
