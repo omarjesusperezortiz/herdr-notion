@@ -67,7 +67,7 @@ class AgentMatching(unittest.TestCase):
         self.assertEqual(app.delegations, {})
         app.draw_list()
         self.assertTrue(scr.has("AGENT"))
-        self.assertTrue(scr.has("○ codex"))
+        self.assertTrue(scr.has("✓ codex"))
 
     def test_herdr_missing_is_quiet_and_stops_asking(self):
         app, _ = fresh()

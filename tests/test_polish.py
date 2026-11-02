@@ -382,3 +382,56 @@ class Columns(unittest.TestCase):
         self.assertNotIn("Name", seen["items"])
         self.assertNotIn("Status", seen["items"])
         self.assertIn("Priority", seen["items"])
+
+
+class AgentGlyphs(unittest.TestCase):
+    def test_elapsed_text_is_short_and_honest(self):
+        e = nt.elapsed_text
+        self.assertEqual([e(s) for s in (0, 47, 59, 60, 720, 3599, 3600, 7440, 86399, 86400, 4 * 86400 + 3 * 3600 + 5)],
+                         ["0s", "47s", "59s", "1m", "12m", "59m", "1h00m", "2h04m", "23h59m", "1d0h", "4d3h"])
+        self.assertEqual(e(-5), "0s")
+
+    def test_agent_state_uses_herdrs_glyphs_and_colors(self):
+        s = nt.agent_state
+        self.assertEqual(s("working"), ("◐", "amber", "working"))
+        self.assertEqual(s("idle"), ("✓", "grey", "idle"))
+        self.assertEqual(s("done"), ("●", "green", "done"))
+        self.assertEqual(s("idle", done=True), ("●", "green", "done"))
+        self.assertEqual(s("blocked")[0], "◉")
+        self.assertEqual(s("needs_input")[:2], ("◉", "red"))
+        self.assertEqual(s("sent"), ("○", "grey", "sent"))
+        self.assertEqual(s(None), ("○", "grey", "sent"))
+
+    def test_the_agent_cell_shows_glyph_name_and_running_time(self):
+        app, scr = fresh(h=20, w=110)
+        pid = app.pages[0]["id"]
+        app.delegations[pid] = {"pane": "p", "agent": "claude", "title": "t", "status": "working", "done": False,
+                                "started": time.time() - 12 * 60 - 5}
+        self.assertEqual(app.agent_cell(app.pages[0]), ("◐ claude 12m", "amber"))
+        app.draw_list()
+        self.assertTrue(scr.has("◐ claude 12m"))
+
+    def test_a_finished_agents_time_stops_at_the_end(self):
+        app, _ = fresh()
+        pid = app.pages[0]["id"]
+        now = time.time()
+        app.delegations[pid] = {"pane": "p", "agent": "claude", "title": "t", "status": "idle", "done": True,
+                                "started": now - 3 * 3600, "ended": now - 3 * 3600 + 125}
+        self.assertEqual(app.agent_cell(app.pages[0]), ("● claude 2m", "green"))
+
+    def test_tracking_stamps_the_start_and_the_end_is_stamped_when_it_finishes(self):
+        app, _ = fresh()
+        app.save_delegations = lambda: None
+        app.track(app.pages[0], "w1:p1", "claude")
+        d = app.delegations[app.pages[0]["id"]]
+        self.assertAlmostEqual(d["started"], time.time(), delta=5)
+        app.on_agents([{"pane_id": "w1:p1", "status": "working"}])
+        app.on_agents([{"pane_id": "w1:p1", "status": "idle"}])
+        self.assertTrue(d["done"])
+        self.assertIn("ended", d)
+
+    def test_a_needs_you_agent_is_red(self):
+        app, _ = fresh()
+        pid = app.pages[0]["id"]
+        app.delegations[pid] = {"pane": "p", "agent": "codex", "title": "t", "status": "blocked", "done": False}
+        self.assertEqual(app.agent_cell(app.pages[0]), ("◉ codex", "red"))

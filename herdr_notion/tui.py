@@ -1231,7 +1231,7 @@ class App:
         # They are dropped from the right until the title has at least 20 columns.
         extra = [c for c in self.cfg["columns"] if c != self.cfg["status_property"]]
         cols = ([] if self.compact else [("STATUS", 14)]) + [(c.upper(), min(14, max(len(c), 6))) for c in extra] \
-            + ([("AGENT", 12)] if any(p["id"] in self.delegations or p["id"] in self.found for p in self.pages) else []) + [("EDITED", 8)]
+            + ([("AGENT", 18)] if any(p["id"] in self.delegations or p["id"] in self.found for p in self.pages) else []) + [("EDITED", 8)]
         while cols and tw_total - 4 - sum(cw + 2 for _, cw in cols) < 20:
             cols.pop()
         tw = max(10, tw_total - 4 - sum(cw + 2 for _, cw in cols))
@@ -1965,23 +1965,24 @@ class App:
 
     def track(self, page, pane, agent):
         self.delegations[page["id"]] = {"pane": pane, "agent": agent, "title": nt.page_title(page),
-                                         "seen_working": False, "done": False, "status": "sent"}
+                                         "seen_working": False, "done": False, "status": "sent", "started": time.time()}
         self.next_agent_poll = 0
         self.save_delegations()
 
     def agent_cell(self, page):
-        """(text, color role) for the AGENT column of a page, or None when no agent is known for it."""
+        """(text, color role) for the AGENT column of a page, or None when no agent is known for it: herdr's glyph for
+        its state (◉ needs you, ◐ working, ● done, ✓ idle), its name and how long it has been on the page."""
         d = self.delegations.get(page["id"])
-        if not d:
-            a = self.found.get(page["id"])
-            if a:
-                return "%s %s" % ("◉" if a["status"] == "working" else "○", a["name"] or a["agent"]), \
-                    "purple" if a["status"] == "working" else "grey"
-            return None
-        if d.get("done"):
-            return "✔ %s" % d["agent"], "green"
-        working = d.get("status") == "working"
-        return "%s %s" % ("◉" if working else "○", d["agent"]), "purple" if working else "grey"
+        if d:
+            glyph, key, _ = nt.agent_state(d.get("status"), d.get("done"))
+            started = d.get("started")
+            took = " " + nt.elapsed_text((d.get("ended") or time.time()) - started) if started else ""
+            return "%s %s%s" % (glyph, d["agent"], took), key
+        a = self.found.get(page["id"])
+        if a:
+            glyph, key, _ = nt.agent_state(a["status"])
+            return "%s %s" % (glyph, a["name"] or a["agent"]), key
+        return None
 
     def poll_agents(self):
         """Every few seconds ask herdr how the delegated agents are doing (never while something else loads)."""
@@ -2011,7 +2012,8 @@ class App:
                 continue
             if a["status"] == "working":
                 self.delegations[pg["id"]] = {"pane": a["pane_id"], "agent": a["name"] or a["agent"], "title": nt.page_title(pg),
-                                              "seen_working": True, "done": False, "status": "working", "auto": True}
+                                              "seen_working": True, "done": False, "status": "working", "auto": True,
+                                              "started": time.time()}
             else:
                 self.found[pg["id"]] = a
 
@@ -2027,12 +2029,14 @@ class App:
             now = status.get(d["pane"])
             if now is None:  # the pane is gone
                 d["done"] = True
+                d["ended"] = time.time()
                 continue
             d["status"] = now
             if now == "working":
                 d["seen_working"] = True
             elif d["seen_working"] and now in ("idle", "done"):
                 d["done"] = True
+                d["ended"] = time.time()
                 self.finished.append(pid)
         self.save_delegations()
 

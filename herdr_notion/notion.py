@@ -312,6 +312,32 @@ def edited_within(iso, seconds, now=None):
     return bool(t) and 0 <= ((now or datetime.now(timezone.utc)) - t).total_seconds() <= seconds
 
 
+def elapsed_text(seconds):
+    """'47s', '12m', '2h04m', '4d3h': how long something has run, in the shortest honest form."""
+    s = max(0, int(seconds))
+    if s < 60:
+        return "%ds" % s
+    if s < 3600:
+        return "%dm" % (s // 60)
+    if s < 86400:
+        return "%dh%02dm" % (s // 3600, s % 3600 // 60)
+    return "%dd%dh" % (s // 86400, s % 86400 // 3600)
+
+
+def agent_state(status, done=False):
+    """(glyph, color role, words) in herdr's own language: ◉ needs you, ◐ working, ● done, ✓ idle."""
+    st = (status or "").lower()
+    if done or st == "done":
+        return "●", "green", "done"
+    if any(w in st for w in ("block", "need", "wait", "input")):
+        return "◉", "red", "needs you"
+    if st == "working":
+        return "◐", "amber", "working"
+    if st == "idle":
+        return "✓", "grey", "idle"
+    return "○", "grey", "sent"
+
+
 def style_lines(lines):
     """Classify flattened body lines for display: heading, rule, todo, done,
     quote, fence, code or plain. Tracks ``` fences across lines."""
