@@ -151,6 +151,16 @@ class Ordering(unittest.TestCase):
         self.assertEqual(len(heads), len(set(app.header_key.values())), heads)
         self.assertEqual(sorted(app.header_key.values()), sorted(set(app.group_of(p) for p in app.pages)))
 
+    def test_the_cursor_stays_visible_when_g_folds_every_group(self):
+        app, scr = make_app([dict(p) for p in PAGES], h=28, w=90)
+        app.send_key(ord("g"))  # grouped
+        app.send_key(ord("g"))  # folded
+        self.assertTrue(app.collapsed)
+        self.assertIsNotNone(app.hdr)
+        self.assertIsNotNone(app.cursor_index(app.build_display()))
+        app.send_key(curses_key("DOWN"))  # and it still moves, header to header
+        self.assertIsNotNone(app.cursor_index(app.build_display()))
+
     def test_selection_follows_the_page_through_a_sort(self):
         app, _ = make_app([dict(p) for p in PAGES])
         app.sel = next(i for i, p in enumerate(app.pages) if nt.page_title(p) == "Charlie")

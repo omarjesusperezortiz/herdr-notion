@@ -881,6 +881,8 @@ class App:
             self.step_sel(1)
             if self.folded(self.sel):
                 self.step_sel(-1)
+            if self.folded(self.sel):  # every page is hidden: the cursor goes to the header of its group
+                self.hdr = self.group_of(self.pages[self.sel])
         self.msg = "%d of %d groups folded" % (len(self.collapsed & set(keys)), len(set(keys)))
 
     def load_seen(self):
