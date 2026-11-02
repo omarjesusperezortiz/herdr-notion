@@ -138,8 +138,8 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `→` / `←` | `→` goes into the preview (↑↓, PgUp/PgDn, `g`/`G` scroll it) or opens the page when the pane has no preview; `←` comes back. Space and `b` scroll the preview without going in |
 | `J` / `K`, Space, `b` | scroll the preview a few lines / page through the list |
 | `O` / `g` | sort (newest edit, title, status) / group the rows by status (press `g` again to fold every group, once more for the plain list). While grouped, `↑` can land on a group header: `←` folds it, `→` opens it, `⏎` toggles; `←` on a page jumps up to its header, in the order the status options have in Notion (to do, in progress, done). Set `group_order = ["In progress", "To do"]` under `[notion]` to put some first |
-| `s` | change status: pick an option, then confirm with `y` |
-| `d` | delegate: pick a running agent (status, cwd) or **+ start new agent…**, then a line asks for an optional note, which goes above the task's link (⏎ alone sends only the link, Esc cancels; `ask_note = false` in `[delegate]` turns the question off) |
+| `s` | change status: pick an option, then confirm in the box in the middle (`⏎` or `y`; `Esc` cancels) |
+| `d` | delegate: pick a running agent (status, cwd) or **+ start new agent…**, then a box in the middle asks for an optional note, which goes above the task's link, and a second box shows exactly what will be sent (`⏎` sends, `Esc` cancels at either step; `ask_note = false` in `[delegate]` skips both and sends the task as it is) |
 | `o` | open the page in the browser |
 | `]` / `[` | next / previous page while reading one |
 | `y` / `Y` | copy the page URL / the delegate prompt (pbcopy, wl-copy, xclip or xsel) |
@@ -150,6 +150,10 @@ source and queries `POST /v1/data_sources/{id}/query`.
 
 In a pane 120 columns or wider the list gets a **preview pane** with the selected page's body. A **•** before a title
 means the page was edited after you last looked at it, and the list refreshes itself every minute.
+
+Messages and questions appear in the middle of the screen, over the list, not on the last line where they were easy to miss: a
+confirm is a box (`⏎` or `y` says yes, anything else says no), a success is a small green box that fades after three seconds, and a
+failure is a red box that stays until a key. The footer keeps the small facts (`3 marked`, `u undoes the last status change`).
 
 The plugin never edits Notion on its own: the only write is the status change, after an explicit confirm. The only text sent to an agent is the delegate prompt (by default the task's title, link and status, plus your note), when you pick the agent.
 

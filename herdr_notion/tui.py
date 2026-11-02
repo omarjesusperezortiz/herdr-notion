@@ -95,7 +95,7 @@ class App:
         self.last_agents = []  # herdr's agent list as of the last poll
         self.agents_view, self.arow = False, 0  # A: every agent and its ticket; the selected row
         self.cached_at = None  # ISO time of the saved list on screen while the fresh one loads
-        self.toast_state = None  # {text, kind, until}: the message in the footer, with a color and a life
+        self.toast_state = None  # {text, kind, until}: the message in the middle of the screen, with a color and a life
         self.undo = None  # the last status write(s), for u
         self.option_colors = {}  # property -> {option name: Notion color name}
         self.status_colors, self.status_glyphs = {}, {}  # status name -> color role / glyph (palette.status_colors)
@@ -350,12 +350,14 @@ class App:
         self.scr.addnstr(h // 2, 2, text, w - 4)
         self.scr.refresh()
 
-    TOAST_SECONDS = 8.0
+    TOAST_SECONDS = 3.0  # an ok toast fades after this; an info one after twice; a failure stays until a key
     UNDO_SECONDS = 60.0
 
     def toast(self, text, kind="ok", ttl=None):
         """A message in the footer with a color: green for done, red for a failure (it stays until a key is pressed)."""
-        self.toast_state = {"text": text, "kind": kind, "until": time.time() + (ttl or (30.0 if kind == "err" else self.TOAST_SECONDS))}
+        self.msg = ""  # the toast says it; a progress line such as "Updating…" must not linger under it
+        life = ttl or (60.0 if kind == "err" else self.TOAST_SECONDS * (2 if kind == "info" else 1))
+        self.toast_state = {"text": text, "kind": kind, "until": time.time() + life}
 
     def live_toast(self):
         t = self.toast_state
@@ -1543,6 +1545,55 @@ class App:
     # ------------------------------------------------------------ board
     def redraw(self):
         (self.draw_detail if self.detail else self.draw_agents if self.agents_view else self.draw_board if self.board else self.draw_list)()
+        self.draw_toast()
+
+    # ------------------------------------------------------------ modals and messages in the middle of the screen
+    def modal(self, title, lines, buttons="", role="accent", width=64, input_line=None):
+        """A rounded box in the middle of the screen, over whatever is drawn. `lines` is [(color role or '', text)], wrapped to
+        the box; `buttons` is the key line at the bottom; `input_line` is (label, typed text). Returns (y0, x0, height, width)."""
+        h, w = self.scr.getmaxyx()
+        bw = max(24, min(w - 2, width))
+        inner = bw - 4
+        body = []
+        for r, t in lines:
+            body += [(r, part) for part in (textwrap.wrap(t, inner) or [""])] if t else [(r, "")]
+        room = max(1, h - 6 - (2 if input_line else 0) - (2 if buttons else 0))
+        if len(body) > room:
+            body = body[:room - 1] + [("grey", "…")]
+        bh = len(body) + 2 + (2 if input_line else 0) + (2 if buttons else 0)
+        y0, x0 = max(0, (h - bh) // 2), max(0, (w - bw) // 2)
+        edge = self.paint(role) | curses.A_BOLD
+        for y in range(bh):
+            row = ("╭" + "─" * (bw - 2) + "╮") if y == 0 else ("╰" + "─" * (bw - 2) + "╯") if y == bh - 1 else ("│" + " " * (bw - 2) + "│")
+            self.scr.addnstr(y0 + y, x0, row, bw, edge)
+        if title:
+            self.scr.addnstr(y0, x0 + 2, " %s " % title, bw - 4, edge)
+        y = y0 + 1
+        for r, t in body:
+            self.scr.addnstr(y, x0 + 2, t, inner, self.paint(r) if r else 0)
+            y += 1
+        if input_line:
+            label, typed = input_line
+            room_in = inner - nt.cell_width(label) - 1
+            shown = typed[-room_in:] if nt.cell_width(typed) > room_in else typed
+            self.scr.addnstr(y + 1, x0 + 2, label, inner, curses.A_BOLD)
+            self.scr.addnstr(y + 1, x0 + 2 + nt.cell_width(label), shown + "▏", max(1, inner - nt.cell_width(label)))
+            y += 2
+        if buttons:
+            self.scr.addnstr(y + 1, x0 + 2, buttons, inner, curses.A_DIM)
+        return y0, x0, bh, bw
+
+    def draw_toast(self):
+        """The toast over the screen, in the middle: green and short for done, a red box that stays until a key for a failure."""
+        t = self.live_toast()
+        if not t:
+            return
+        role = {"ok": "green", "err": "red"}.get(t["kind"], "accent")
+        mark = {"ok": "✓ ", "err": "", "info": ""}.get(t["kind"], "")
+        title = "Something went wrong" if t["kind"] == "err" else ""
+        text = mark + t["text"]
+        self.modal(title, [("", text)], "any key closes" if t["kind"] == "err" else "", role,
+                   width=min(60, max(24, nt.cell_width(text) + 6)))
 
     def board_columns(self):
         """[(status name, [indexes into self.pages])]: a column per option in the order of the options in Notion."""
@@ -1843,13 +1894,9 @@ class App:
             ctx = ""
             parts = nt.fit_hint_parts(hints, w - 2)
         note = "%s %s" % (self.spin(), self.job["label"]) if self.visible_job() else self.msg
-        t = self.live_toast()
-        if t and not self.visible_job():
-            mark = {"ok": "✓ ", "err": "✕ ", "info": ""}.get(t["kind"], "")
-            self.scr.addnstr(h - 2, 1, mark + t["text"], w - 2,
-                             curses.A_BOLD | (self.paint("green") if t["kind"] == "ok" else self.paint("red") if t["kind"] == "err" else 0))
-            hint_row = h - 1
-        elif note:
+        if not note and self.undo and time.time() < self.undo["until"]:
+            note = "u undoes the last status change"
+        if note:
             self.scr.addnstr(h - 2, 1, note, w - 2, curses.A_BOLD if not self.job else curses.A_DIM)
             hint_row = h - 1
         else:
@@ -1978,10 +2025,59 @@ class App:
             self.scr.timeout(-1)
             curses.curs_set(0)
 
-    def confirm(self, text):
-        h, w = self.scr.getmaxyx()
-        self.scr.addnstr(h - 1, 0, (text + " [y/N]").ljust(w - 1), w - 1, curses.A_BOLD)
-        return self.scr.getch() in (ord("y"), ord("Y"))
+    def background(self):
+        """Put the screen back behind a modal (before there is a list, as in the first-run setup, just clear it)."""
+        if self.cfg and self.client is not None:
+            self.redraw()
+        else:
+            self.scr.erase()
+
+    def confirm(self, text, title="Confirm", yes="Yes"):
+        """A question in the middle of the screen. ⏎ or y says yes; Esc, n, q or any other key says no."""
+        while True:
+            self.background()
+            self.modal(title, [("", text)], "⏎ %s    Esc cancel" % yes)
+            self.scr.refresh()
+            k = self.scr.getch()
+            if k in (curses.KEY_RESIZE, curses.KEY_MOUSE):
+                if k == curses.KEY_MOUSE:
+                    self.read_mouse()
+                continue
+            return k in (10, 13, curses.KEY_ENTER, ord("y"), ord("Y"))
+
+    def type_text(self, title, lines, label, initial=""):
+        """A box in the middle of the screen with one typed line. ⏎ accepts (an empty line is fine), Esc cancels (None)."""
+        buf = initial
+        curses.curs_set(1)
+        try:
+            while True:
+                self.background()
+                self.modal(title, lines, "⏎ continue    Esc cancel", input_line=(label, buf))
+                self.scr.refresh()
+                k = self.scr.get_wch()
+                if k == "\x1b":
+                    return None
+                if k in ("\n", "\r"):
+                    return buf
+                if k in ("\x7f", "\b") or k == curses.KEY_BACKSPACE:
+                    buf = buf[:-1]
+                elif isinstance(k, str) and k.isprintable():
+                    buf += k
+        finally:
+            curses.curs_set(0)
+
+    def review(self, title, lines, yes="Send"):
+        """Shows exactly what is about to happen, in the middle of the screen; True when it is accepted."""
+        while True:
+            self.background()
+            self.modal(title, lines, "⏎ %s    Esc cancel" % yes, width=76)
+            self.scr.refresh()
+            k = self.scr.getch()
+            if k in (curses.KEY_RESIZE, curses.KEY_MOUSE):
+                if k == curses.KEY_MOUSE:
+                    self.read_mouse()
+                continue
+            return k in (10, 13, curses.KEY_ENTER, ord("y"), ord("Y"))
 
     # ------------------------------------------------------------ actions
     def change_status(self):
@@ -2401,17 +2497,21 @@ class App:
         self.save_delegations()
         self.toast("closed the pane of %s" % name)
 
-    def with_note(self, prompt):
-        """Let the user add a line of their own to the task being sent: it goes first, the link follows below it.
-        Enter with nothing typed sends only the link; Esc cancels the send (returns None)."""
+    def compose_message(self, page, prompt, target):
+        """Ask for a note to put above the task, then show exactly what will be sent. Returns the text to send, or None when
+        cancelled. `target` says where it goes, as [(color role, line)]. `ask_note = false` sends the task as it is."""
         if not self.cfg["delegate"].get("ask_note", True):
             return prompt
-        note = self.ask("note to send with the link (⏎ sends only the link, Esc cancels): ")
+        title = nt.page_title(page)
+        note = self.type_text("Send “%s”" % nt.clip(title, 40), [("", title)] + target, "note › ")
         if note is None:
             self.msg = "cancelled"
             return None
-        note = note.strip()
-        return "%s\n\n%s" % (note, prompt) if note else prompt
+        text = "%s\n\n%s" % (note.strip(), prompt) if note.strip() else prompt
+        if not self.review("What will be sent", target + [("", "")] + [("", line) for line in text.split("\n")]):
+            self.msg = "cancelled"
+            return None
+        return text
 
     def delegate(self):
         page, prompt = self.build_prompt()
@@ -2426,7 +2526,7 @@ class App:
         if i is None:
             return
         if i < len(agents):
-            prompt = self.with_note(prompt)
+            prompt = self.compose_message(page, prompt, [("grey", "To %s (%s)" % (agents[i]["name"] or agents[i]["agent"], agents[i]["status"]))])
             if prompt is None:
                 return
             self.note("Sending prompt…")
@@ -2446,7 +2546,7 @@ class App:
         if not cwd:
             return
         cwd = os.path.expanduser(os.path.expandvars(cwd))
-        prompt = self.with_note(prompt)
+        prompt = self.compose_message(page, prompt, [("grey", "Starts %s in %s" % (kinds[j]["name"], self.tilde(cwd)))])
         if prompt is None:
             return
         self.note("Starting %s…" % kinds[j]["name"])
@@ -2489,7 +2589,7 @@ class App:
         if not self.confirm("Branch %s from %s in %s, start %s there?" % (name, base, self.tilde(path), kinds[j]["name"])):
             self.msg = "cancelled"
             return
-        prompt = self.with_note(prompt)
+        prompt = self.compose_message(page, prompt, [("grey", "Starts %s in the new branch %s" % (kinds[j]["name"], name))])
         if prompt is None:
             return
         self.note("Creating the worktree…")

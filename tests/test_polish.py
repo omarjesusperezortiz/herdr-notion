@@ -75,7 +75,7 @@ class Pills(unittest.TestCase):
 
 
 class Toasts(unittest.TestCase):
-    def test_a_status_change_toasts_with_undo_and_the_toast_is_drawn_in_the_footer(self):
+    def test_a_status_change_toasts_with_undo_and_the_toast_is_drawn_in_the_middle(self):
         app, scr = fresh(h=28, w=100)
         app.popup = lambda title, items, start=0, at=None: items.index("Review")
         app.confirm = lambda text: True
@@ -83,8 +83,18 @@ class Toasts(unittest.TestCase):
         app.change_status()
         self.assertEqual(app.toast_state["kind"], "ok")
         self.assertIn("u undo", app.toast_state["text"])
+        app.redraw()
+        y, _ = scr.find("✓ Status set to Review · u undo")
+        self.assertTrue(8 <= y <= 20, y)  # not in the footer
+
+    def test_the_footer_says_u_undoes_while_an_undo_is_possible(self):
+        app, scr = fresh(h=28, w=100)
+        app.popup = lambda title, items, start=0, at=None: items.index("Review")
+        app.confirm = lambda text: True
+        app.change_status()
+        app.toast_state = None
         app.draw_list()
-        self.assertTrue(scr.has("✓ Status set to Review · u undo"))
+        self.assertTrue(scr.has("u undoes the last status change"))
 
     def test_a_toast_expires(self):
         app, scr = fresh(h=28, w=100)
@@ -93,18 +103,21 @@ class Toasts(unittest.TestCase):
         with mock.patch("time.time", return_value=time.time() + 60):
             self.assertIsNone(app.live_toast())
 
-    def test_an_error_toast_is_red_and_stays_until_a_key(self):
+    def test_an_error_toast_is_a_red_box_in_the_middle_that_stays_until_a_key(self):
         app, scr = fresh(h=28, w=100)
         app.colors = True
         app.pairs = {("red", False): 3, ("green", False): 2}
         app.report(nt.NotionError("Notion 429, try again"))
         self.assertEqual(app.toast_state["kind"], "err")
         with mock.patch("curses.color_pair", lambda n: n << 8):
-            app.draw_list()
-        row = next(y for y in range(24, 28) if "429" in "".join(scr.grid[y]))
-        col = "".join(scr.grid[row]).index("✕")
-        self.assertEqual(scr.attrs[row][col] >> 8 & 0xff, 3)
-        # it outlives the 8 s of an ok toast
+            app.redraw()
+        self.assertTrue(scr.has("Something went wrong"))
+        self.assertTrue(scr.has("any key closes"))
+        row = next(y for y in range(28) if "429" in "".join(scr.grid[y]))
+        self.assertTrue(8 <= row <= 20)
+        col = "".join(scr.grid[row]).index("│")
+        self.assertEqual(scr.attrs[row][col] >> 8 & 0xff, 3)  # the box is red
+        # it outlives the seconds of an ok toast
         with mock.patch("time.time", return_value=time.time() + 10):
             self.assertIsNotNone(app.live_toast())
 
@@ -1377,7 +1390,15 @@ class DelegateNote(unittest.TestCase):
         self.app, _ = make_app([page(1, "Alpha")])
         self.app.cfg["delegate"] = dict(cfgmod.load()["delegate"])
         self.sent = []
-        self.app.ask = lambda label, initial="": self.answer
+        self.shown = []  # (title, lines) of every box the flow opened
+        self.accept = True
+        def note_box(title, lines, label, initial=""):
+            self.shown.append((title, lines))
+            return self.answer
+        def preview(title, lines, yes="Send"):
+            self.shown.append((title, lines))
+            return self.accept
+        self.app.type_text, self.app.review = note_box, preview
         self.app.popup = lambda title, items, **kw: 0
         self.app.track = lambda *a, **k: None
         self.app.build_prompt = lambda: (self.app.pages[0], "THE TASK")
@@ -1412,6 +1433,33 @@ class DelegateNote(unittest.TestCase):
         self.answer = "never asked"
         self.app.delegate()
         self.assertEqual(self.sent, [("w1:p1", "THE TASK")])
+        self.assertEqual(self.shown, [])
+
+    def test_the_note_box_names_the_task_and_where_it_goes(self):
+        self.answer = ""
+        self.app.delegate()
+        title, lines = self.shown[0]
+        self.assertEqual(title, "Send “Alpha”")
+        self.assertIn(("grey", "To orch (idle)"), lines)
+
+    def test_the_preview_shows_exactly_what_will_be_sent(self):
+        self.answer = "look at the tests"
+        self.app.delegate()
+        title, lines = self.shown[1]
+        self.assertEqual(title, "What will be sent")
+        self.assertEqual([t for _, t in lines], ["To orch (idle)", "", "look at the tests", "", "THE TASK"])
+
+    def test_declining_the_preview_sends_nothing(self):
+        self.answer = "hello"
+        self.accept = False
+        self.app.delegate()
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.app.msg, "cancelled")
+
+    def test_the_success_toast_names_the_task_and_the_agent(self):
+        self.answer = ""
+        self.app.delegate()
+        self.assertEqual(self.app.toast_state["text"], "sent “Alpha” to orch")
 
 
 class DelegateLinkOnly(unittest.TestCase):
