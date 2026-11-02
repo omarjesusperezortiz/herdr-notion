@@ -164,6 +164,11 @@ the prompt. If it never becomes ready, nothing is sent.
 
 Off by default: `mouse = true` in the config, or `M` while running. With it on, hold Option or Shift to select text.
 
+Two switches have to be on. The plugin's (`M`, or `mouse = true`), and herdr's own: `[ui] mouse_capture = true` in
+herdr's `config.toml` (it is the default; with `false` herdr leaves the mouse to the terminal and no pane gets clicks).
+Reload herdr's config after changing it. Right click may be kept by herdr for itself: set
+`right_click_passthrough_modifier = "ctrl"` under `[ui]` and use Ctrl-right-click for the menu.
+
 | Click | What it does |
 |---|---|
 | a row | selects it; a second click opens it; a click in the preview gives it the focus, a click in the list takes it back |
