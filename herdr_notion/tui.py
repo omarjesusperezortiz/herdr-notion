@@ -86,6 +86,7 @@ class App:
         self.hits = []  # clickable regions of the last drawing: (y, x0, x1, action, argument)
         self.focus = "list"  # "preview" while the arrow keys scroll the preview pane
         self.colors, self.pairs, self.sel_bg = False, {}, False  # filled by init_colors
+        self.used_keys = set(self.read_json("usage.json").get("keys", []))  # keys you have pressed (for the tip line)
         self.synced_at, self.offline, self.me_name = None, "", ""  # when the list last came from Notion, why it did not, who is signed in
         self.dtab, self.drow = 0, 0  # section of the page view (Body, Comments, Related) and the selected linked page
         self.preview_mode = "ticket"  # a switches the preview to the agent's terminal
@@ -1252,6 +1253,20 @@ class App:
                     else ("Space ▾ more · " if more else "b ▴ back · ")) + mark
             self.scr.addnstr(bottom - 1, max(x0, x0 + width - len(hint)), hint, min(len(hint), width), curses.A_DIM | curses.A_BOLD)
 
+    def draw_empty(self, y, w):
+        """No rows: say which filters are in play and which keys take them off, or what to do in an empty tab."""
+        tab = self.cfg["filters"][self.fidx]["name"]
+        pills = self.filter_pills()
+        if pills:
+            lines = [("Nothing in %s matches" % tab, curses.A_BOLD), (" · ".join(l for _, l in pills), curses.A_DIM), ("", 0),
+                     ("Esc removes the newest filter · 0 shows every status · Q changes the quick filter", 0)]
+        else:
+            nxt = self.cfg["filters"][(self.fidx + 1) % len(self.cfg["filters"])]["name"]
+            lines = [("Nothing in %s yet" % tab, curses.A_BOLD), ("", 0),
+                     ("Tab opens %s · n creates a page · r refreshes" % nxt, curses.A_DIM)]
+        for n, (text, attr) in enumerate(lines):
+            self.scr.addnstr(y + n, 2, text, max(w - 3, 1), attr)
+
     def draw_agent_preview(self, x0, width, top, bottom, page, ap):
         pane, name = ap
         cell = self.agent_cell(page)
@@ -1371,7 +1386,7 @@ class App:
                 self.scr.addnstr(y0 + r, 2, bar, tw, curses.A_DIM)
                 self.scr.addnstr(y0 + r, 2 + tw + 2, "░░░░░░░░", 8, curses.A_DIM)
         elif not self.pages:
-            self.scr.addnstr(y0 + 1, 2, "No pages match this filter.", tw_total - 3, curses.A_DIM)
+            self.draw_empty(y0 + 1, tw_total)
         if wide:
             for y in range(hy, h - 3):
                 self.scr.addnstr(y, tw_total, "┃" if self.focus == "preview" else "│", 1, self.cp(2) | curses.A_BOLD if self.focus == "preview" else curses.A_DIM)
@@ -1815,6 +1830,10 @@ class App:
             hint_row = h - 1
         else:
             hint_row = h - 2
+        if hint_row == h - 2 and h >= 14:  # nothing else in the footer: a tip for a key you have not tried
+            tip = self.next_tip()
+            if tip:
+                self.scr.addnstr(h - 1, 1, "tip: " + tip, w - 2, curses.A_DIM)
         x = 1
         for i, text in parts:  # each hint is a button: a click does what its key does
             self.scr.addnstr(hint_row, x, text, w - 1 - x, curses.A_DIM)
@@ -2946,6 +2965,26 @@ class App:
     # ------------------------------------------------------------ one box to go anywhere (Ctrl-P, :)
     RECENTS = 30
 
+    TIPS = [("g", "g groups by status; press it again to fold the groups"), ("Q", "Q narrows to changed today, no assignee, due this week…"),
+            ("B", "B shows the board: a column per status"), ("^P", "Ctrl-P jumps to any ticket or command"),
+            ("c", "c picks which columns the table shows"), ("p", "p hides the preview pane"), ("u", "u undoes your last status change"),
+            ("A", "A lists every agent and the ticket it is on"), ("a", "a shows the agent's terminal in the preview"),
+            ("x", "x marks tickets; s then changes them all at once"), ("z", "z shrinks the rows to a colored bar"),
+            ("L", "L opens a page linked from this one"), ("w", "w starts a branch and an agent for a ticket"),
+            ("+", "+ saves this view as a tab"), ("F", "F shows one status; [ and ] move along them")]
+
+    def note_key(self, k):
+        """Remember which keys you have used, so the tip line only suggests ones you have not."""
+        name = "^P" if k == 16 else chr(k) if 32 <= k < 127 else None
+        if name and name not in self.used_keys:
+            self.used_keys.add(name)
+            self.write_json("usage.json", {"keys": sorted(self.used_keys)})
+
+    def next_tip(self, now=None):
+        """A tip for a key not used yet, rotating every 40 seconds; None once you have used them all."""
+        fresh = [t for k, t in self.TIPS if k not in self.used_keys]
+        return fresh[int((time.time() if now is None else now) // 40) % len(fresh)] if fresh else None
+
     def note_recent(self, page):
         items = [r for r in self.read_json("recents.json").get("items", []) if r.get("id") != page["id"]]
         items.insert(0, {"id": page["id"], "title": nt.page_title(page), "tid": nt.page_ticket_id(page), "at": time.time()})
@@ -3511,6 +3550,7 @@ class App:
                 continue
             if self.toast_state and self.toast_state["kind"] == "err" and k != curses.KEY_MOUSE:
                 self.toast_state = None  # a failure stays until you press a key
+            self.note_key(k)
             self.scr.timeout(-1)  # handlers below (popups, confirm, ask) read keys in blocking mode
             if self.detail:
                 if not self.detail_key(k):

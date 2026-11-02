@@ -1166,3 +1166,73 @@ class Freshness(unittest.TestCase):
         ran["done"](ran["r"])
         self.assertEqual(app.me_name, "Ada")
         self.assertIsNotNone(app.synced_at)
+
+
+class EmptyStatesAndTips(unittest.TestCase):
+    def empty(self, **kw):
+        app, scr = fresh(**kw)
+        app.all, app.pages = [], []
+        return app, scr
+
+    def test_an_empty_tab_with_no_filters_says_what_to_do(self):
+        app, scr = self.empty(h=24, w=100)
+        app.draw_list()
+        self.assertTrue(scr.has("Nothing in All yet"))
+        self.assertTrue(scr.has("Tab opens Mine · n creates a page · r refreshes"))
+
+    def test_filters_that_hide_everything_are_named_with_the_keys_that_remove_them(self):
+        app, scr = fresh(h=24, w=110)
+        app.live = "zzzz"
+        app.quick = "today"
+        app.refilter()
+        self.assertEqual(app.pages, [])
+        app.draw_list()
+        self.assertTrue(scr.has("Nothing in All matches"))
+        self.assertTrue(scr.has("changed today · “zzzz”"))
+        self.assertTrue(scr.has("Esc removes the newest filter"))
+
+    def test_the_empty_message_is_not_shown_while_loading(self):
+        app, scr = self.empty(h=24, w=100)
+        app.job = {"kind": "list", "label": "Loading…", "done": False, "seq": 1, "on_done": None}
+        app.draw_list()
+        self.assertFalse(scr.has("Nothing in"))
+
+    def test_a_tip_suggests_only_keys_you_have_not_used(self):
+        app, _ = fresh()
+        tip = app.next_tip(now=0)
+        self.assertIn(tip, [t for _, t in app.TIPS])
+        app.used_keys = {k for k, _ in app.TIPS}
+        self.assertIsNone(app.next_tip())
+        app.used_keys = {k for k, _ in app.TIPS if k != "u"}
+        self.assertEqual(app.next_tip(now=123), "u undoes your last status change")
+
+    def test_tips_rotate_every_forty_seconds(self):
+        app, _ = fresh()
+        a = app.next_tip(now=0)
+        self.assertEqual(app.next_tip(now=39), a)
+        self.assertNotEqual(app.next_tip(now=41), a)
+
+    def test_pressed_keys_are_remembered_across_sessions(self):
+        d = tempfile.mkdtemp()
+        app, _ = fresh_in(d)
+        app.note_key(ord("g"))
+        app.note_key(16)
+        app.note_key(curses.KEY_UP)  # not a letter: ignored
+        app2, _ = fresh_in(d)
+        self.assertEqual(app2.used_keys, {"g", "^P"})
+        self.assertNotIn("g groups by status; press it again to fold the groups", [app2.next_tip(now=i * 40) for i in range(20)])
+
+    def test_the_tip_is_drawn_under_the_hints_and_hidden_when_there_is_a_message(self):
+        app, scr = fresh(h=24, w=110)
+        app.draw_list()
+        self.assertTrue(scr.has("tip: "))
+        app.msg = "something happened"
+        scr.clear()
+        app.draw_list()
+        self.assertFalse(scr.has("tip: "))
+        self.assertTrue(scr.has("something happened"))
+
+    def test_no_tip_on_a_very_short_pane(self):
+        app, scr = fresh(h=12, w=110)
+        app.draw_list()
+        self.assertFalse(scr.has("tip: "))
