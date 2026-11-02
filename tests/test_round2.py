@@ -153,3 +153,86 @@ class QuickFilters(unittest.TestCase):
         app.refresh_async = lambda *a, **k: None
         app.pick_filter(0)
         self.assertEqual(app.quick, "")
+
+
+class Board(unittest.TestCase):
+    def board(self, **kw):
+        app, scr = fresh(**kw)
+        app.list_key(ord("B"))
+        return app, scr
+
+    def titles_in(self, app, name):
+        return [nt.page_title(app.pages[i]) for n, idxs in app.board_columns() if n == name for i in idxs]
+
+    def test_b_opens_one_column_per_status_in_notion_order(self):
+        app, scr = self.board(w=130)
+        self.assertTrue(app.board)
+        self.assertEqual([n for n, _ in app.board_columns()], ["To do", "In progress", "Review", "Done"])
+        app.draw_board()
+        for text in ("To do 2", "In progress 1", "Review 1", "Done 1", "Bravo", "Alpha"):
+            self.assertTrue(scr.has(text), text)
+
+    def test_it_starts_on_the_card_selected_in_the_list(self):
+        app, _ = fresh()
+        app.sel = next(i for i, p in enumerate(app.pages) if nt.page_title(p) == "Echo")
+        app.list_key(ord("B"))
+        cols = app.board_columns()
+        self.assertEqual(cols[app.bcol][0], "Review")
+        self.assertEqual(app.board_page(cols), app.sel)
+
+    def test_hjkl_move_between_columns_and_cards(self):
+        app, _ = self.board()
+        app.bcol = app.brow = 0
+        app.board_key(ord("j"))
+        self.assertEqual(app.brow, 1)
+        app.board_key(ord("j"))
+        self.assertEqual(app.brow, 1)  # last card of the column
+        app.board_key(ord("l"))
+        self.assertEqual(app.bcol, 1)
+        self.assertLessEqual(app.brow, 0)
+        app.board_key(ord("h"))
+        self.assertEqual(app.bcol, 0)
+
+    def test_L_moves_the_card_after_a_confirm_and_follows_it(self):
+        app, _ = self.board()
+        app.bcol = app.brow = 0
+        moved = nt.page_title(app.pages[app.board_page()])
+        app.confirm = lambda text: True
+        app.board_key(ord("L"))
+        self.assertIn(moved, self.titles_in(app, "In progress"))
+        self.assertNotIn(moved, self.titles_in(app, "To do"))
+        self.assertEqual(app.board_columns()[app.bcol][0], "In progress")
+        self.assertEqual(nt.page_title(app.pages[app.board_page()]), moved)
+        self.assertEqual(len(app.client.writes), 1)
+
+    def test_declining_the_move_writes_nothing(self):
+        app, _ = self.board()
+        app.bcol = app.brow = 0
+        app.confirm = lambda text: False
+        app.board_key(ord("L"))
+        self.assertEqual(app.client.writes, [])
+        self.assertEqual(app.msg, "cancelled")
+
+    def test_the_last_column_has_nowhere_to_go(self):
+        app, _ = self.board()
+        app.bcol, app.brow = 3, 0
+        app.confirm = lambda text: self.fail("should not ask")
+        app.board_key(ord("L"))
+        self.assertEqual(app.client.writes, [])
+
+    def test_enter_opens_the_card_and_esc_leaves_the_board(self):
+        app, _ = self.board()
+        opened = []
+        app.open_page = lambda page: opened.append(nt.page_title(page))
+        app.bcol = app.brow = 0
+        app.board_key(10)
+        self.assertEqual(len(opened), 1)
+        app.board_key(27)
+        self.assertFalse(app.board)
+
+    def test_a_narrow_pane_shows_fewer_columns_and_scrolls_to_the_selected_one(self):
+        app, scr = self.board(w=50)
+        app.bcol = 3
+        app.draw_board()
+        self.assertTrue(scr.has("Done 1"))
+        self.assertFalse(scr.has("To do 2"))

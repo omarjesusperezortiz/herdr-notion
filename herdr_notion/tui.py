@@ -25,7 +25,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "clear search and filters, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off (config: mouse = true)"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -45,6 +45,7 @@ class App:
         self.sort_mode = 0  # index into SORTS
         self.group = False  # group rows under their status
         self.preview_on = True  # p hides the preview pane
+        self.board, self.bcol, self.brow, self.bfirst = False, 0, 0, 0  # board view: on, column, card, first column shown
         self.collapsed = set()  # status names whose group is folded (only while grouped)
         self.header_key = {}  # group header text -> status name, filled by build_display
         self.seen = self.load_seen()  # page id -> last edit time already looked at (for the unread dot)
@@ -169,7 +170,7 @@ class App:
     def note(self, text):
         """Show `text` in the footer over the screen as it is, without blanking it, then keep working."""
         self.msg = text
-        (self.draw_detail if self.detail else self.draw_list)()
+        self.redraw()
         self.scr.refresh()
 
     def guard(self, fn, *a):
@@ -879,6 +880,149 @@ class App:
                     [("⏎", "open"), ("s", "status"), ("d", "delegate"), ("Tab", "next tab"), ("/", "search")]
                     + ([("→", "preview")] if wide else []) + [("e", "edit"), ("z", "compact"), ("n", "new"), ("?", "more")])
 
+    # ------------------------------------------------------------ board
+    def redraw(self):
+        (self.draw_detail if self.detail else self.draw_board if self.board else self.draw_list)()
+
+    def board_columns(self):
+        """[(status name, [indexes into self.pages])]: a column per option in the order of the options in Notion."""
+        prop = self.cfg["status_property"]
+        cols = {n: [] for n in sorted(self.status_order, key=self.status_order.get)}
+        for i, p in enumerate(self.pages):
+            cols.setdefault(nt.prop_text(p["properties"].get(prop)) or "No status", []).append(i)
+        return list(cols.items())
+
+    def board_page(self, cols=None):
+        cols = cols or self.board_columns()
+        if not cols:
+            return None
+        idxs = cols[max(0, min(self.bcol, len(cols) - 1))][1]
+        return idxs[max(0, min(self.brow, len(idxs) - 1))] if idxs else None
+
+    def toggle_board(self):
+        if not self.pages:
+            self.msg = "nothing to show on a board yet"
+            return
+        self.board, self.bcol, self.brow, self.bfirst = True, 0, 0, 0
+        cur = nt.prop_text(self.pages[self.sel]["properties"].get(self.cfg["status_property"])) or "No status"
+        cols = self.board_columns()
+        for ci, (name, idxs) in enumerate(cols):  # start on the card selected in the list
+            if name == cur and self.sel in idxs:
+                self.bcol, self.brow = ci, idxs.index(self.sel)
+        self.msg = ""
+
+    CARD_ROWS = 4
+
+    def draw_board(self):
+        h, w = self.scr.getmaxyx()
+        self.scr.erase()
+        self.hits = []
+        self.draw_tabs(w)
+        cols = self.board_columns()
+        if not cols:
+            self.scr.addnstr(3, 2, "No pages match this filter.", w - 3, curses.A_DIM)
+        else:
+            self.bcol = max(0, min(self.bcol, len(cols) - 1))
+            self.brow = max(0, min(self.brow, max(len(cols[self.bcol][1]) - 1, 0)))
+            nvis = max(1, min(len(cols), w // 24))
+            self.bfirst = min(self.bfirst, self.bcol)
+            if self.bcol >= self.bfirst + nvis:
+                self.bfirst = self.bcol - nvis + 1
+            cw = w // nvis
+            rows = max(1, (h - 5) // self.CARD_ROWS)
+            extra = [c for c in self.cfg["columns"] if c != self.cfg["status_property"]]
+            for v in range(nvis):
+                ci = self.bfirst + v
+                name, idxs = cols[ci]
+                x0 = v * cw
+                kind = self.kind_of(name)
+                head = "%s %s %d" % (self.MARK[kind], name, len(idxs))
+                self.scr.addnstr(1, x0 + 1, nt.clip(head, cw - 2), cw - 2,
+                                 curses.A_BOLD | self.kind_attr(kind) | (curses.A_UNDERLINE if ci == self.bcol else 0))
+                if v:
+                    for y in range(1, h - 3):
+                        self.scr.addnstr(y, x0 - 1, "│", 1, curses.A_DIM)
+                top = max(0, self.brow - rows + 1) if ci == self.bcol else 0
+                for r, i in enumerate(idxs[top:top + rows]):
+                    pg, y = self.pages[i], 3 + r * self.CARD_ROWS
+                    on = ci == self.bcol and top + r == self.brow
+                    base = curses.A_REVERSE if on else 0
+                    for dy in range(self.CARD_ROWS - 1):
+                        self.scr.addnstr(y + dy, x0, " " * (cw - 2), cw - 2, base)
+                    lines = textwrap.wrap(nt.clean(nt.page_title(pg)), max(cw - 4, 8))[:2]
+                    for dy, line in enumerate(lines):
+                        self.scr.addnstr(y + dy, x0 + 1, line, cw - 3, base | (curses.A_BOLD if on else 0))
+                    cell = self.agent_cell(pg)
+                    facts = [nt.prop_text(pg["properties"].get(c)) for c in extra[:1]] + ([cell[0]] if cell else [])
+                    mark = "• " if self.unread(pg) else ""
+                    self.scr.addnstr(y + len(lines), x0 + 1, nt.clip(mark + "  ".join(f for f in facts if f), cw - 3), cw - 3, base | curses.A_DIM)
+                if len(idxs) > top + rows:
+                    self.scr.addnstr(h - 4, x0 + 1, "▾ %d more" % (len(idxs) - top - rows), cw - 3, curses.A_DIM)
+        self.rule(h - 3, w)
+        self.footer([("h l", "column"), ("j k", "card"), ("H L", "move card"), ("⏎", "open"), ("s", "status"),
+                     ("d", "delegate"), ("Tab", "next tab"), ("B", "list"), ("?", "more")])
+
+    def board_key(self, k):
+        """Keys on the board: h/l column, j/k card, H/L move the card to the neighbouring status (asks first)."""
+        cols = self.board_columns()
+        self.msg = ""
+        if k == curses.KEY_MOUSE:
+            return True
+        if k in (ord("B"), ord("q"), 27):
+            self.board = False
+            return True
+        if not cols:
+            return True
+        self.bcol = max(0, min(self.bcol, len(cols) - 1))
+        if k in (curses.KEY_RIGHT, ord("l"), curses.KEY_LEFT, ord("h")):
+            self.bcol = max(0, min(len(cols) - 1, self.bcol + (1 if k in (curses.KEY_RIGHT, ord("l")) else -1)))
+            self.brow = min(self.brow, max(len(cols[self.bcol][1]) - 1, 0))
+        elif k in (curses.KEY_DOWN, ord("j"), curses.KEY_UP, ord("k")):
+            n = len(cols[self.bcol][1])
+            self.brow = max(0, min(n - 1, self.brow + (1 if k in (curses.KEY_DOWN, ord("j")) else -1)))
+        elif k in (9, curses.KEY_BTAB) and len(self.cfg["filters"]) > 1:
+            self.pick_filter((self.fidx + (-1 if k == curses.KEY_BTAB else 1)) % len(self.cfg["filters"]))
+        elif k in (ord("H"), ord("L")):
+            self.guard(self.board_move, cols, 1 if k == ord("L") else -1)
+        elif k == ord("r"):
+            self.refresh_async("Refreshing…")
+        elif k == ord("?"):
+            self.help()
+        else:
+            i = self.board_page(cols)
+            if i is None:
+                return True
+            self.sel = i
+            if k in (10, 13, curses.KEY_ENTER):
+                self.guard(self.open_page, self.pages[i])
+            else:
+                self.common_key(k)
+        return True
+
+    def board_move(self, cols, step):
+        """H / L: set the status of the selected card to the one of the neighbouring column, after a confirm."""
+        i = self.board_page(cols)
+        target = self.bcol + step
+        if i is None or not 0 <= target < len(cols):
+            return
+        name = cols[target][0]
+        if name == "No status":
+            self.msg = "cannot move a card to 'No status'"
+            return
+        page = self.pages[i]
+        prop = self.cfg["status_property"]
+        kind, options = nt.status_options(self.client.discover(), prop)
+        if not self.confirm("Move '%s' to '%s'?" % (nt.clip(nt.page_title(page), 30), name)):
+            self.msg = "cancelled"
+            return
+        self.note("Updating…")
+        self.replace_page(self.client.set_status(page["id"], prop, kind, name))
+        cols = self.board_columns()  # follow the card to its new column
+        self.bcol = next((ci for ci, (n, _) in enumerate(cols) if n == name), self.bcol)
+        idxs = cols[self.bcol][1]
+        self.brow = next((r for r, j in enumerate(idxs) if self.pages[j]["id"] == page["id"]), 0)
+        self.msg = "%s set to %s" % (prop, name)
+
     def draw_detail(self):
         h, w = self.scr.getmaxyx()
         self.scr.erase()
@@ -1377,7 +1521,7 @@ class App:
         if not page:
             return
         dcfg = self.cfg["delegate"]
-        (self.draw_detail if self.detail else self.draw_list)()  # put the screen back behind the popup
+        self.redraw()  # put the screen back behind the popup
         self.scr.refresh()
         agents = dg.list_agents()
         items = [dg.agent_label(a) for a in agents] + ["+ start new agent…"]
@@ -1917,7 +2061,7 @@ class App:
             self.msg = "tabs saved"
 
     PALETTE = [("Change status", "s"), ("Delegate to an agent", "d"), ("Edit a property", "e"), ("New page", "n"),
-               ("Show one status ([ ] moves along them)", "F"), ("Quick filter: changed today, no assignee, due…", "Q"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
+               ("Show one status ([ ] moves along them)", "F"), ("Quick filter: changed today, no assignee, due…", "Q"), ("Board: a column per status", "B"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
                ("Notion views", "V"), ("Sort", "O"), ("Group by status", "g"), ("Fold or unfold a group", "-"), ("Compact rows", "z"),
                ("Switch database", "D"), ("Refresh", "r"), ("Open in browser", "o"), ("Copy the link", "y"),
                ("Mouse on or off", "M"), ("Connection and sign-in", "S"), ("Help: every key", "?")]
@@ -2240,9 +2384,9 @@ class App:
             self.auto_refresh()
             self.poll_agents()
             if self.finished:
-                self.draw_list() if not self.detail else self.draw_detail()
+                self.redraw()
                 self.guard(self.offer_review)
-            (self.draw_detail if self.detail else self.draw_list)()
+            self.redraw()
             self.scr.refresh()
             self.scr.timeout(100 if self.job else 500 if self.wide() else 1000)
             k = self.scr.getch()
@@ -2252,6 +2396,8 @@ class App:
             if self.detail:
                 if not self.detail_key(k):
                     continue
+            elif self.board:
+                self.board_key(k)
             elif self.list_key(k) is False:
                 return
             if self.want_quit:
@@ -2342,6 +2488,8 @@ class App:
             self.cycle_status(1 if k == ord("]") else -1)
         elif k == ord("0") and self.status_filter:
             self.set_status_filter("")
+        elif k == ord("B"):
+            self.toggle_board()
         elif k == ord("Q"):
             self.guard(self.pick_quick_filter)
         elif k == ord("V"):

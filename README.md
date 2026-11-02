@@ -123,6 +123,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `>` | move the page to the next status (asks to confirm the first time only) |
 | `M` | mouse on/off: click a row (twice opens it), a tab or a status chip; the wheel scrolls the pane under the pointer |
 | `V` | open one of the database's Notion views as a tab: its filters, its order, real paging |
+| `B` | Board: a column per status. `h` `l` change column, `j` `k` card, `H` `L` move the card to the next status (asks first), `⏎` opens it, `B` or `Esc` goes back to the list |
 | `Q` | Quick filter on what is loaded: changed today or this week, unread, no assignee, due this week. `Esc` clears it |
 | `p` | Show or hide the preview pane. Hidden, the table uses the whole width and `→` opens the page |
 | `-` / `=` | Fold or unfold the selected status group / all groups (with `g` grouping on; clicking a group header does the same) |

@@ -35,7 +35,7 @@ Each is done only when its tests pass. Whatever is tested only against fakes is 
   They stack on the current tab, show in the header, and Esc clears them.
 - [x] **R2 Agent badges.** Delegation puts the page id in the prompt. A herdr agent whose prompt or recent output holds
   that id is matched to the row (working, idle). A finished agent offers to set the status.
-- [ ] **R3 Board view.** `B` opens columns by status. h/l column, j/k card, H/L move the card (confirm), Enter opens.
+- [x] **R3 Board view.** `B` opens columns by status. h/l column, j/k card, H/L move the card (confirm), Enter opens.
 - [ ] **R4 Subtasks and relations in the preview.** Sub-items and related pages listed under the properties; Enter opens one.
 - [ ] **R5 Digest.** `herdr-notion digest` prints what changed since the last look, from the seen file.
 - [ ] **R6 Branch from a ticket.** `b` proposes a branch name, asks, creates it and starts an agent there.
