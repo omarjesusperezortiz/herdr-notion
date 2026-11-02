@@ -290,11 +290,18 @@ class CustomTabs(unittest.TestCase):
         app.palette()
         self.assertTrue(app.compact)
 
-    def test_colon_opens_the_palette_from_the_list(self):
+    def test_colon_opens_the_go_anywhere_box_from_the_list(self):
+        app = self.app
+        called = []
+        app.goto_box = lambda: called.append(1)
+        app.list_key(ord(":"))
+        self.assertEqual(called, [1])
+
+    def test_the_palette_popup_still_lists_every_command(self):
         app = self.app
         seen = {}
         app.popup = lambda title, items, start=0: seen.setdefault("title", title) and None
-        app.list_key(ord(":"))
+        app.palette()
         self.assertEqual(seen["title"], "Commands")
 
 

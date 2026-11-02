@@ -27,8 +27,8 @@ in-app help say how to use it. Order below is the build order. Writes to Notion 
 
 ## 4. Agents and jumping
 
-- [ ] **B1 herdr glyphs and running time.** Agent column uses ◉ needs you, ◐ working, ● done, ✓ idle, with a running time (`12m`, `2h04m`).
-- [ ] **A3 / B3 Go-anywhere box.** `Ctrl-P` opens one fuzzy box with pages and commands; needs-you agents, then recents; the current page is
+- [x] **B1 herdr glyphs and running time.** Agent column uses ◉ needs you, ◐ working, ● done, ✓ idle, with a running time (`12m`, `2h04m`).
+- [x] **A3 / B3 Go-anywhere box.** `Ctrl-P` opens one fuzzy box with pages and commands; needs-you agents, then recents; the current page is
   not first; "search all of Notion" last.
 
 ## 5. Agent views

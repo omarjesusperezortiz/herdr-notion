@@ -27,7 +27,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "remove the newest filter pill, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("c", "choose and order the table's columns"), ("u", "undo the last status change (for a minute)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("u", "undo the last status change (for a minute)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -577,6 +577,7 @@ class App:
         """Show the page at once with what the list already knows; the body fills in when it arrives."""
         pid = page["id"]
         self.mark_seen(page)
+        self.note_recent(page)
         self.detail = {"page": page, "lines": [], "body": "Loading…" if pid not in self.cache else "\n".join(self.cache[pid])}
         self.dscroll = 0
 
@@ -2650,6 +2651,144 @@ class App:
             self.fidx = next((n for n, f in enumerate(new) if f is current), 0)
             self.msg = "tabs saved"
 
+    # ------------------------------------------------------------ one box to go anywhere (Ctrl-P, :)
+    RECENTS = 30
+
+    def note_recent(self, page):
+        items = [r for r in self.read_json("recents.json").get("items", []) if r.get("id") != page["id"]]
+        items.insert(0, {"id": page["id"], "title": nt.page_title(page), "tid": nt.page_ticket_id(page), "at": time.time()})
+        self.write_json("recents.json", {"items": items[:self.RECENTS]})
+
+    def current_page_id(self):
+        if self.detail:
+            return self.detail["page"]["id"]
+        return self.pages[self.sel]["id"] if self.pages and self.sel < len(self.pages) and not self.hdr else None
+
+    def needs_you(self):
+        """Ids of the pages whose agent wants you: blocked, or just finished and waiting for you to look."""
+        ids = [pid for pid, d in self.delegations.items() if nt.agent_state(d.get("status"), False)[2] == "needs you"]
+        return ids + [pid for pid in self.finished if pid not in ids]
+
+    def goto_items(self, query):
+        """Rows of the go-anywhere box: [{kind: header|page|command|search, label, right, ...}]. With no query: agents that
+        need you, then pages you opened lately (never the one you are on), then a few commands. With a query: the pages
+        that match (loaded ones and recents), the commands that match, and a last row that searches all of Notion."""
+        q = query.strip()
+        here = self.current_page_id()
+        loaded = {p["id"]: p for p in self.all}
+        recents = [r for r in self.read_json("recents.json").get("items", []) if r.get("id")]
+        need = self.needs_you()
+        rows = []
+
+        def page_row(pid, title, right, **kw):
+            return dict({"kind": "page", "id": pid, "label": title, "right": right}, **kw)
+
+        def right_of(pid):
+            pg = loaded.get(pid)
+            cell = self.agent_cell(pg) if pg else None
+            status = nt.prop_text(pg["properties"].get(self.cfg["status_property"])) if pg else ""
+            return (cell[0] + "  " if cell else "") + status
+
+        if not q:
+            heads = [(pid, nt.page_title(loaded[pid])) for pid in need if pid in loaded and pid != here]
+            if heads:
+                rows.append({"kind": "header", "label": "Needs you"})
+                rows += [page_row(pid, t, right_of(pid)) for pid, t in heads]
+            rec = [r for r in recents if r["id"] != here and r["id"] not in {h[0] for h in heads}][:6]
+            if rec:
+                rows.append({"kind": "header", "label": "Recent"})
+                rows += [page_row(r["id"], r["title"], right_of(r["id"]) or "opened %s ago" % nt.relative_time(
+                    datetime.fromtimestamp(r["at"], timezone.utc).isoformat())) for r in rec]
+            rows.append({"kind": "header", "label": "Commands"})
+            rows += [{"kind": "command", "label": n, "right": k, "key": k} for n, k in self.PALETTE[:6]]
+            return rows
+        scored = []
+        seen = set()
+        for pid, pg in loaded.items():
+            hay = "%s %s %s" % (nt.page_title(pg), nt.page_ticket_id(pg), nt.prop_text(pg["properties"].get(self.cfg["status_property"])))
+            sc = nt.fuzzy_score(q, hay)
+            if sc is not None:
+                scored.append((sc + (15 if pid in need else 0) + (3 if pid == here else 0), page_row(pid, nt.page_title(pg), right_of(pid))))
+                seen.add(pid)
+        for r in recents:
+            if r["id"] not in seen:
+                sc = nt.fuzzy_score(q, "%s %s" % (r["title"], r.get("tid", "")))
+                if sc is not None:
+                    scored.append((sc - 5, page_row(r["id"], r["title"], "recent")))
+        scored.sort(key=lambda t: -t[0])
+        if scored:
+            rows.append({"kind": "header", "label": "Pages"})
+            rows += [r for _, r in scored[:8]]
+        cmds = [(nt.fuzzy_score(q, n), n, k) for n, k in self.PALETTE]
+        cmds = sorted([c for c in cmds if c[0] is not None], key=lambda c: -c[0])[:6]
+        if cmds:
+            rows.append({"kind": "header", "label": "Commands"})
+            rows += [{"kind": "command", "label": n, "right": k, "key": k} for _, n, k in cmds]
+        rows.append({"kind": "header", "label": "More"})
+        rows.append({"kind": "search", "label": "Search all of Notion for “%s”" % q, "right": "⏎ on this line", "text": q})
+        return rows
+
+    def goto_box(self):
+        """Ctrl-P or :  one fuzzy box for pages and commands. ↑↓ move, ⏎ goes, Esc closes."""
+        query, sel = "", 0
+        while True:
+            rows = self.goto_items(query)
+            pick = [i for i, r in enumerate(rows) if r["kind"] != "header"]
+            sel = max(0, min(sel, len(pick) - 1))
+            h, w = self.scr.getmaxyx()
+            bw, bh = min(w - 2, 74), min(h - 2, 20)
+            win = curses.newwin(bh, bw, max(0, (h - bh) // 2 - 2), (w - bw) // 2)
+            win.keypad(True)
+            win.box()
+            win.addnstr(1, 2, "› " + query + "▏", bw - 4, curses.A_BOLD)
+            win.addnstr(2, 1, "─" * (bw - 2), bw - 2, curses.A_DIM)
+            room = bh - 5
+            at = pick[sel] if pick else 0
+            first = max(0, min(at - room + 1, len(rows) - room))
+            for r, row in enumerate(rows[first:first + room]):
+                y, on = 3 + r, first + r == at and row["kind"] != "header"
+                if row["kind"] == "header":
+                    win.addnstr(y, 2, row["label"], bw - 4, curses.A_DIM | curses.A_BOLD)
+                    continue
+                right = nt.clip(row.get("right", ""), 24)
+                left = nt.pad("%s %s" % ("●" if row["kind"] == "page" else "›" if row["kind"] == "command" else "⌕", row["label"]), bw - 6 - len(right))
+                win.addstr(y, 1, (" " + left + " " + right + " ")[:bw - 2], curses.A_REVERSE if on else 0)
+            win.addnstr(bh - 2, 2, "↑↓ move · ⏎ go · Esc close", bw - 4, curses.A_DIM)
+            win.refresh()
+            try:
+                k = win.get_wch()
+            except curses.error:
+                continue
+            if k == "\x1b":
+                return
+            if k in ("\n", "\r", curses.KEY_ENTER):
+                if pick:
+                    self.goto_open(rows[pick[sel]])
+                return
+            if k in (curses.KEY_DOWN, "\x0e"):
+                sel = min(sel + 1, len(pick) - 1)
+            elif k in (curses.KEY_UP, "\x10"):
+                sel = max(sel - 1, 0)
+            elif k in ("\x7f", "\b", curses.KEY_BACKSPACE):
+                query, sel = query[:-1], 0
+            elif isinstance(k, str) and k.isprintable():
+                query, sel = query + k, 0
+
+    def goto_open(self, row):
+        """Do what the chosen row says: open the page, run the command, or search all of Notion."""
+        if row["kind"] == "page":
+            page = next((p for p in self.all if p["id"] == row["id"]), None)
+            if not page:
+                self.note("Opening…")
+                page = self.client.get_page(row["id"])
+            self.board = False
+            self.open_page(page)
+        elif row["kind"] == "command":
+            self.send_key(ord(row["key"]))
+        elif row["kind"] == "search":
+            self.query = row["text"]
+            self.refresh_async("Searching…")
+
     PALETTE = [("Change status", "s"), ("Delegate to an agent", "d"), ("Edit a property", "e"), ("New page", "n"),
                ("Show one status ([ ] moves along them)", "F"), ("Quick filter: changed today, no assignee, due…", "Q"), ("Columns: choose and order", "c"), ("Board: a column per status", "B"), ("Open a linked page", "L"), ("Branch (worktree) for this ticket", "w"), ("Save this view as a tab", "+"), ("Manage tabs", "T"),
                ("Notion views", "V"), ("Sort", "O"), ("Group by status", "g"), ("Fold or unfold a group", "-"), ("Compact rows", "z"),
@@ -3106,7 +3245,9 @@ class App:
         self.open_page(target)
 
     def common_key(self, k):
-        if k == ord("u"):
+        if k == 16:  # Ctrl-P
+            self.guard(self.goto_box)
+        elif k == ord("u"):
             self.guard(self.undo_last)
         elif k == ord("w"):
             self.guard(self.start_branch)
@@ -3221,7 +3362,7 @@ class App:
         elif k == ord("T"):
             self.guard(self.manage_tabs)
         elif k == ord(":"):
-            self.guard(self.palette)
+            self.guard(self.goto_box)
         elif k == ord("z"):
             self.compact = not self.compact
             self.save_layout()

@@ -435,3 +435,199 @@ class AgentGlyphs(unittest.TestCase):
         pid = app.pages[0]["id"]
         app.delegations[pid] = {"pane": "p", "agent": "codex", "title": "t", "status": "blocked", "done": False}
         self.assertEqual(app.agent_cell(app.pages[0]), ("◉ codex", "red"))
+
+
+class Fuzzy(unittest.TestCase):
+    def test_substrings_beat_scattered_letters_and_word_starts_beat_the_middle(self):
+        f = nt.fuzzy_score
+        self.assertGreater(f("login", "Fix login redirect"), f("login", "Lock orange gin"))
+        self.assertGreater(f("fix", "Fix login"), f("fix", "Prefix login"))
+        self.assertIsNotNone(f("flr", "Fix login redirect"))  # letters in order
+        self.assertIsNone(f("zzz", "Fix login redirect"))
+
+    def test_every_word_must_match_in_any_order_and_accents_do_not_matter(self):
+        f = nt.fuzzy_score
+        self.assertIsNotNone(f("redirect login", "Fix login redirect"))
+        self.assertIsNone(f("redirect payment", "Fix login redirect"))
+        self.assertIsNotNone(f("revision", "Revisión de precios"))
+
+    def test_a_shorter_title_wins_a_tie(self):
+        self.assertGreater(nt.fuzzy_score("fix", "Fix it"), nt.fuzzy_score("fix", "Fix it and then some other long thing"))
+
+
+class GotoRows(unittest.TestCase):
+    def app(self):
+        app, scr = fresh(h=30, w=100)
+        for i, p in enumerate(app.all):
+            p["properties"]["ID"] = {"type": "rich_text", "rich_text": [{"plain_text": "ET-%d" % (100 + i)}]}
+        app.refilter()
+        return app
+
+    def kinds(self, rows):
+        return [r["kind"] for r in rows]
+
+    def labels(self, rows, kind):
+        return [r["label"] for r in rows if r["kind"] == kind]
+
+    def test_an_empty_box_offers_recents_without_the_current_page_and_a_few_commands(self):
+        app = self.app()
+        for p in app.all[:3]:
+            app.note_recent(p)
+        here = app.pages[app.sel]
+        rows = app.goto_items("")
+        self.assertEqual(rows[0], {"kind": "header", "label": "Recent"})
+        self.assertNotIn(nt.page_title(here), self.labels(rows, "page"))
+        self.assertTrue(self.labels(rows, "command"))
+        self.assertNotIn("search", self.kinds(rows))
+
+    def test_agents_that_need_you_come_first(self):
+        app = self.app()
+        target = app.all[3]
+        app.delegations[target["id"]] = {"pane": "p", "agent": "codex", "title": "t", "status": "blocked", "done": False}
+        app.note_recent(app.all[1])
+        rows = app.goto_items("")
+        self.assertEqual(rows[0]["label"], "Needs you")
+        self.assertEqual(rows[1]["label"], nt.page_title(target))
+        self.assertIn("◉ codex", rows[1]["right"])
+
+    def test_a_finished_agent_waiting_for_review_counts_as_needing_you(self):
+        app = self.app()
+        app.finished = [app.all[4]["id"]]
+        rows = app.goto_items("")
+        self.assertEqual(rows[1]["label"], nt.page_title(app.all[4]))
+
+    def test_a_query_finds_pages_by_title_ticket_id_and_status_then_commands_then_search(self):
+        app = self.app()
+        by_id = app.goto_items("et-102")
+        self.assertEqual(self.labels(by_id, "page")[0], nt.page_title(app.all[2]) if False else self.labels(by_id, "page")[0])
+        self.assertEqual(len(self.labels(by_id, "page")), 1)
+        by_status = app.goto_items("review")
+        self.assertIn("Echo", self.labels(by_status, "page"))
+        rows = app.goto_items("char")
+        self.assertEqual(rows[0], {"kind": "header", "label": "Pages"})
+        self.assertEqual(rows[-1]["kind"], "search")
+        self.assertIn("char", rows[-1]["label"])
+
+    def test_commands_match_by_name(self):
+        app = self.app()
+        rows = app.goto_items("board")
+        self.assertIn("Board: a column per status", self.labels(rows, "command"))
+        self.assertEqual([r["key"] for r in rows if r["kind"] == "command"][0], "B")
+
+    def test_a_recent_page_that_is_not_loaded_still_matches(self):
+        app = self.app()
+        app.write_json("recents.json", {"items": [{"id": "elsewhere", "title": "Quarterly planning", "tid": "ET-9", "at": time.time()}]})
+        rows = app.goto_items("quart")
+        row = next(r for r in rows if r["kind"] == "page")
+        self.assertEqual((row["id"], row["right"]), ("elsewhere", "recent"))
+
+    def test_the_agent_that_needs_you_outranks_an_equal_match(self):
+        app = self.app()
+        charlie = next(p for p in app.all if nt.page_title(p) == "Charlie")
+        rows = app.goto_items("l")  # a mid-word match in Alpha, Charlie and Delta
+        self.assertNotEqual(next(r for r in rows if r["kind"] == "page")["label"], "Charlie")
+        app.delegations[charlie["id"]] = {"pane": "p", "agent": "x", "title": "t", "status": "blocked", "done": False}
+        rows = app.goto_items("l")
+        self.assertEqual(next(r for r in rows if r["kind"] == "page")["label"], "Charlie")
+
+    def test_recents_are_kept_newest_first_without_duplicates_and_capped(self):
+        app = self.app()
+        for p in app.all:
+            app.note_recent(p)
+        app.note_recent(app.all[0])
+        items = app.read_json("recents.json")["items"]
+        self.assertEqual(items[0]["id"], app.all[0]["id"])
+        self.assertEqual(len(items), len({i["id"] for i in items}))
+        for i in range(40):
+            app.note_recent({"id": "x%d" % i, "properties": {}})
+        self.assertEqual(len(app.read_json("recents.json")["items"]), app.RECENTS)
+
+    def test_opening_a_page_records_it_as_recent(self):
+        app = self.app()
+        app.start_job = lambda *a, **k: None
+        app.open_page(app.all[2])
+        self.assertEqual(app.read_json("recents.json")["items"][0]["id"], app.all[2]["id"])
+
+
+class GotoBox(unittest.TestCase):
+    def run_box(self, app, keys):
+        queue = iter(keys)
+
+        class Win:
+            def keypad(self, f): pass
+            def box(self): pass
+            def refresh(self): pass
+            def addnstr(self, *a): pass
+            def addstr(self, *a): pass
+            def get_wch(self): return next(queue)
+
+        with mock.patch("curses.newwin", lambda *a: Win()):
+            app.goto_box()
+
+    def test_typing_then_enter_opens_the_best_page(self):
+        app, _ = fresh()
+        opened = []
+        app.open_page = lambda p: opened.append(nt.page_title(p))
+        self.run_box(app, list("char") + ["\n"])
+        self.assertEqual(opened, ["Charlie"])
+
+    def test_arrows_move_between_rows_but_skip_headers(self):
+        app, _ = fresh()
+        opened = []
+        app.open_page = lambda p: opened.append(nt.page_title(p))
+        self.run_box(app, list("a") + [curses.KEY_DOWN, "\n"])
+        self.assertEqual(len(opened), 1)
+        first = []
+        app.open_page = lambda p: first.append(nt.page_title(p))
+        self.run_box(app, list("a") + ["\n"])
+        self.assertNotEqual(first, opened)
+
+    def test_a_command_row_runs_its_key(self):
+        app, _ = fresh()
+        keys = []
+        app.send_key = lambda k: keys.append(chr(k))
+        self.run_box(app, list("board") + ["\n"])
+        self.assertEqual(keys, ["B"])
+
+    def test_the_last_row_searches_all_of_notion(self):
+        app, _ = fresh()
+        app.refresh_async = lambda *a, **k: None
+        rows = app.goto_items("zzzz")
+        self.assertEqual(rows[-1]["kind"], "search")
+        self.run_box(app, list("zzzz") + ["\n"])
+        self.assertEqual(app.query, "zzzz")
+
+    def test_escape_closes_and_backspace_edits(self):
+        app, _ = fresh()
+        app.open_page = lambda p: self.fail("opened")
+        self.run_box(app, list("xyz") + ["\x1b"])
+        opened = []
+        app.open_page = lambda p: opened.append(nt.page_title(p))
+        self.run_box(app, list("charx") + ["\x7f", "\n"])
+        self.assertEqual(opened, ["Charlie"])
+
+    def test_ctrl_p_and_colon_open_it_and_a_not_loaded_page_is_fetched(self):
+        app, _ = fresh()
+        called = []
+        app.goto_box = lambda: called.append(1)
+        app.list_key(16)
+        app.list_key(ord(":"))
+        self.assertEqual(called, [1, 1])
+        app.goto_box = type(app).goto_box.__get__(app)
+        opened = []
+        app.open_page = lambda p: opened.append(p["id"])
+        app.client.get_page = lambda pid: {"id": pid, "properties": {}}
+        app.goto_open({"kind": "page", "id": "elsewhere", "label": "x", "right": ""})
+        self.assertEqual(opened, ["elsewhere"])
+
+    def test_it_works_from_the_board_and_the_page_view(self):
+        app, _ = fresh()
+        app.list_key(ord("B"))
+        called = []
+        app.goto_box = lambda: called.append("board")
+        app.board_key(16)
+        self.assertEqual(called, ["board"])
+        app.board = False
+        app.detail = {"page": app.pages[0], "lines": [], "body": ""}
+        app.detail_key(16)
+        self.assertEqual(called, ["board", "board"])

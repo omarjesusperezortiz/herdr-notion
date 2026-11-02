@@ -117,7 +117,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `[` / `]`, `0` | move along the status chips under the tabs (every status of the property, with its count; `+` means more pages exist), `0` shows every status. With more pages than are loaded, a chosen status is asked of Notion |
 | `F` | pick one status to show (among the loaded pages) |
 | `+` / `T` | save the current tab + status + search as a new tab / manage tabs (rename, move, delete), written to `config.toml` |
-| `:` | command palette: every command by name |
+| `Ctrl-P`, `:` | Go anywhere: one fuzzy box with pages, commands and "search all of Notion". Empty, it shows agents that need you, then pages you opened lately (never the one you are on), then a few commands. Type to narrow (title, ticket id, status), ↑↓ move, `⏎` goes, `Esc` closes. Recents are kept in `recents.json` |
 | `z` | compact rows: a colored bar replaces the status word (`NO_COLOR=1` turns colors off) |
 | `x` | mark a page (and move down); `s` then sets one status on every marked page, `Esc` clears the marks |
 | `>` | move the page to the next status (asks to confirm the first time only) |

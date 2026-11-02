@@ -312,6 +312,32 @@ def edited_within(iso, seconds, now=None):
     return bool(t) and 0 <= ((now or datetime.now(timezone.utc)) - t).total_seconds() <= seconds
 
 
+def fold(text):
+    """Lower case without accents, for matching ('revisión' matches 'revision')."""
+    return "".join(c for c in unicodedata.normalize("NFD", (text or "").lower()) if unicodedata.category(c) != "Mn")
+
+
+def fuzzy_score(query, text):
+    """How well `query` matches `text` (higher is better), or None. Every word of the query must match: a substring
+    scores highest (more at the start of a word), otherwise its letters must appear in order."""
+    t = fold(text)
+    total = 0.0
+    for tok in fold(query).split():
+        i = t.find(tok)
+        if i >= 0:
+            total += 50 + (20 if i == 0 or not t[i - 1].isalnum() else 0)
+            continue
+        pos, prev, score = 0, -2, 0
+        for ch in tok:
+            j = t.find(ch, pos)
+            if j < 0:
+                return None
+            score += (5 if j == prev + 1 else 1) + (3 if j == 0 or not t[j - 1].isalnum() else 0)
+            prev, pos = j, j + 1
+        total += score
+    return total - len(t) * 0.05
+
+
 def elapsed_text(seconds):
     """'47s', '12m', '2h04m', '4d3h': how long something has run, in the shortest honest form."""
     s = max(0, int(seconds))
