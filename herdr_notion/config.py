@@ -4,14 +4,9 @@ import os
 from . import tomlcompat
 
 DEFAULT_PROMPT = """\
-You are asked to work on this Notion page: {title}
-Link: {url}
-
-Properties:
-{properties}
-
-Content:
-{body}
+Notion task: {title}
+{url}
+Status: {status}
 """
 
 

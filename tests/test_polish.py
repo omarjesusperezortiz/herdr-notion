@@ -1412,3 +1412,35 @@ class DelegateNote(unittest.TestCase):
         self.answer = "never asked"
         self.app.delegate()
         self.assertEqual(self.sent, [("w1:p1", "THE TASK")])
+
+
+class DelegateLinkOnly(unittest.TestCase):
+    """By default what reaches the agent is the task's title, link and status, not its whole page."""
+
+    def setUp(self):
+        from herdr_notion import config as cfgmod
+        self.app, _ = make_app([page(1, "Alpha")])
+        self.app.cfg["delegate"] = dict(cfgmod.load()["delegate"])
+        self.reads = []
+        self.app.client.body_lines = lambda pid: self.reads.append(pid) or ["a long body"]
+
+    def test_the_default_message_is_title_link_and_status(self):
+        pg, text = self.app.build_prompt()
+        self.assertIn("Alpha", text)
+        self.assertIn(pg["url"], text)
+        self.assertIn("Status:", text)
+        self.assertNotIn("a long body", text)
+        self.assertEqual(self.reads, [])  # and the page was not read from Notion
+
+    def test_a_template_with_body_still_sends_it(self):
+        self.app.cfg["delegate"]["prompt"] = "{title}\n{body}"
+        _, text = self.app.build_prompt()
+        self.assertIn("a long body", text)
+        self.assertEqual(len(self.reads), 1)
+
+    def test_the_picker_names_the_task_being_sent(self):
+        titles = []
+        self.app.popup = lambda title, items, **kw: titles.append(title)
+        with mock.patch("herdr_notion.delegate.list_agents", lambda *a, **k: []):
+            self.app.delegate()
+        self.assertEqual(titles, ["Send “Alpha” to…"])

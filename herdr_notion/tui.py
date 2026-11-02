@@ -2054,7 +2054,10 @@ class App:
         page = self.current()
         if not page:
             return None, None
-        if self.detail:
+        dcfg = self.cfg["delegate"]
+        if "{body}" not in dcfg["prompt"]:  # the link is enough: nothing to read from Notion
+            body = ""
+        elif self.detail:
             body = self.detail["body"]
         else:
             if page["id"] not in self.cache:  # the preview usually has it already; otherwise say so in the footer
@@ -2062,7 +2065,6 @@ class App:
                 page = self.client.get_page(page["id"])
                 self.cache[page["id"]] = self.client.body_lines(page["id"])
             body = "\n".join(self.cache[page["id"]])
-        dcfg = self.cfg["delegate"]
         return page, nt.render_prompt(dcfg["prompt"], page, body, dcfg["max_body_chars"])
 
     # ------------------------------------------------------------ edit, comment, create, switch database
@@ -2400,11 +2402,11 @@ class App:
         self.toast("closed the pane of %s" % name)
 
     def with_note(self, prompt):
-        """Let the user add a line of their own to the task being sent: it goes first, the task follows as the attachment.
-        Enter with nothing typed sends the task as it is; Esc cancels the send (returns None)."""
+        """Let the user add a line of their own to the task being sent: it goes first, the link follows below it.
+        Enter with nothing typed sends only the link; Esc cancels the send (returns None)."""
         if not self.cfg["delegate"].get("ask_note", True):
             return prompt
-        note = self.ask("add a note for the agent (⏎ sends as is, Esc cancels): ")
+        note = self.ask("note to send with the link (⏎ sends only the link, Esc cancels): ")
         if note is None:
             self.msg = "cancelled"
             return None
@@ -2420,7 +2422,7 @@ class App:
         self.scr.refresh()
         agents = dg.list_agents()
         items = [dg.agent_label(a) for a in agents] + ["+ start new agent…"]
-        i = self.popup("Delegate to", items)
+        i = self.popup("Send “%s” to…" % nt.page_title(page)[:40], items)
         if i is None:
             return
         if i < len(agents):
@@ -2430,7 +2432,7 @@ class App:
             self.note("Sending prompt…")
             dg.send_prompt(agents[i]["pane_id"], prompt)
             self.track(page, agents[i]["pane_id"], agents[i]["name"] or agents[i]["agent"])
-            self.msg = "sent to %s" % agents[i]["name"]
+            self.toast("sent “%s” to %s" % (nt.page_title(page)[:40], agents[i]["name"] or agents[i]["agent"]))
             return
         kinds = dcfg["agents"]
         j = self.popup("Agent type", [a["name"] for a in kinds])
@@ -2452,7 +2454,7 @@ class App:
                               os.environ.get("HERDR_WORKSPACE_ID"))
         dg.send_prompt(pane, prompt)
         self.track(page, pane, kinds[j]["name"])
-        self.msg = "started %s and sent prompt" % kinds[j]["name"]
+        self.toast("started %s and sent “%s”" % (kinds[j]["name"], nt.page_title(page)[:40]))
 
     def start_branch(self):
         """w: a git worktree and branch named after the ticket, with an agent started inside it and the ticket as prompt."""
