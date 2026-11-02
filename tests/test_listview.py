@@ -140,6 +140,17 @@ class Ordering(unittest.TestCase):
         self.assertTrue(scr.has("To do (2)"))
         self.assertTrue(scr.has("Done (1)"))
 
+    def test_changing_a_status_in_a_grouped_list_does_not_repeat_a_header(self):
+        app, _ = make_app([dict(p) for p in PAGES], h=28, w=90)
+        app.group = True
+        app.apply_sort()
+        moved = dict(next(p for p in app.pages if nt.page_title(p) == "Alpha"))
+        moved["properties"] = dict(moved["properties"], Status={"type": "status", "status": {"name": "To do"}})
+        app.replace_page(moved)
+        heads = [t for kind, t in app.build_display() if kind == "h"]
+        self.assertEqual(len(heads), len(set(app.header_key.values())), heads)
+        self.assertEqual(sorted(app.header_key.values()), sorted(set(app.group_of(p) for p in app.pages)))
+
     def test_selection_follows_the_page_through_a_sort(self):
         app, _ = make_app([dict(p) for p in PAGES])
         app.sel = next(i for i, p in enumerate(app.pages) if nt.page_title(p) == "Charlie")

@@ -757,6 +757,8 @@ class App:
         for n, p in enumerate(self.all):
             if p["id"] == updated["id"]:
                 self.all[n] = updated
+        if self.group or self.SORTS[self.sort_mode][0] == "status":  # the page may belong to another group now
+            self.all.sort(key=self.status_rank)  # stable: the order inside each group stays
         self.refilter()
 
     def on_view_tab(self):
