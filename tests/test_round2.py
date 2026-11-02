@@ -390,6 +390,7 @@ class Branch(unittest.TestCase):
         self.assertEqual(subprocess.run(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True).stdout.strip(), "feat/x")
         with self.assertRaises(br.BranchError):
             br.create(repo, "feat/x", br.worktree_path(repo, "feat/x"), "main")
+        self.assertEqual(br.repo_root(path), repo)  # a linked worktree resolves to its repository
 
 
 class StartBranch(unittest.TestCase):

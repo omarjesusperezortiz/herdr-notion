@@ -34,11 +34,17 @@ def branch_name(page, prefix=""):
 
 
 def repo_root(cwd, runner=None):
-    """The git repository containing `cwd`, or '' when it is not inside one."""
+    """The main git repository containing `cwd` (a linked worktree resolves to the repository it belongs to), or ''
+    when it is not inside one."""
     try:
-        return git(["-C", cwd, "rev-parse", "--show-toplevel"], runner)
+        top = git(["-C", cwd, "rev-parse", "--show-toplevel"], runner)
     except BranchError:
         return ""
+    try:
+        common = git(["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], runner)
+    except BranchError:  # an older git: the worktree itself
+        return top
+    return os.path.dirname(common) if os.path.basename(common) == ".git" else top
 
 
 def base_ref(root, runner=None):
