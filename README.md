@@ -89,7 +89,6 @@ cp config.example.toml "$(herdr plugin config-dir herdr-notion)/config.toml"
 | `columns` | Property names shown next to the title in the list. |
 | `title_property` | Property searched by `/`. Auto-detected if empty. |
 | `page_size` | Pages per query, default 50. |
-| `mouse` | `true` turns on clicks and the wheel (default `false`; `M` toggles it while running). With the mouse on, hold Option or Shift to select text. |
 
 `[[filters]]`: `name`, optional `filter` (a raw
 [Notion filter object](https://developers.notion.com/reference/filter-data-source-entries)
@@ -121,14 +120,13 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `z` | compact rows: a colored bar replaces the status word (`NO_COLOR=1` turns colors off) |
 | `x` | mark a page (and move down); `s` then sets one status on every marked page, `Esc` clears the marks |
 | `>` | move the page to the next status (asks to confirm the first time only) |
-| `M` | mouse on/off (see below) |
 | `V` | open one of the database's Notion views as a tab: its filters, its order, real paging |
 | `B` | Board: a column per status. `h` `l` change column, `j` `k` card, `H` `L` move the card to the next status (asks first), `⏎` opens it, `B` or `Esc` goes back to the list |
 | `L` | Open a page linked from this one (a relation property); `←` comes back. The preview and the page show `☑ 2/3 subtasks · ↗ 2 related` when there are to-dos or links |
 | `w` | New git worktree and branch for the ticket (named like `et-2546-fix-login-redirect`, from `main` when it exists), then an agent starts inside it with the ticket as the prompt. Asks for the repository, the branch name and a confirm. Your current checkout is not touched. `branch_prefix = "feat/"` under `[delegate]` adds a prefix |
 | `Q` | Quick filter on what is loaded: changed today or this week, unread, no assignee, due this week. `Esc` clears it |
 | `p` | Show or hide the preview pane. Hidden, the table uses the whole width and `→` opens the page |
-| `-` / `=` | Fold or unfold just the selected group / all groups (`-` turns grouping on if it is off; clicking a group header does the same) |
+| `-` / `=` | Fold or unfold just the selected group / all groups (`-` turns grouping on if it is off) |
 | `→` / `←` | `→` goes into the preview (↑↓, PgUp/PgDn, `g`/`G` scroll it) or opens the page when the pane has no preview; `←` comes back. Space and `b` scroll the preview without going in |
 | `J` / `K`, Space, `b` | scroll the preview a few lines / page through the list |
 | `O` / `g` | sort (newest edit, title, status) / group the rows by status (press `g` again to fold every group, once more for the plain list). While grouped, `↑` can land on a group header: `←` folds it, `→` opens it, `⏎` toggles; `←` on a page jumps up to its header, in the order the status options have in Notion (to do, in progress, done). Set `group_order = ["In progress", "To do"]` under `[notion]` to put some first |
@@ -159,28 +157,6 @@ Running agents come from `herdr agent list`; the prompt is delivered with
 type and a working directory, creates a tab (`herdr tab create`), starts the
 agent with `herdr pane run`, waits until it is detected and idle, then sends
 the prompt. If it never becomes ready, nothing is sent.
-
-### Mouse
-
-Off by default: `mouse = true` in the config, or `M` while running. With it on, hold Option or Shift to select text.
-
-Two switches have to be on. The plugin's (`M`, or `mouse = true`), and herdr's own: `[ui] mouse_capture = true` in
-herdr's `config.toml` (it is the default; with `false` herdr leaves the mouse to the terminal and no pane gets clicks).
-Reload herdr's config after changing it. Right click may be kept by herdr for itself: set
-`right_click_passthrough_modifier = "ctrl"` under `[ui]` and use Ctrl-right-click for the menu.
-
-| Click | What it does |
-|---|---|
-| a row | selects it; a second click opens it; a click in the preview gives it the focus, a click in the list takes it back |
-| the status word or another cell | opens the status popup (or the editor of that property) for that row |
-| the colored bar of a row | marks it; with Shift or Alt held it marks every row from the last one clicked (many terminals keep Shift for themselves) |
-| `TITLE`, `STATUS`, `EDITED` | sorts by it; a second click reverses it (▼ ▲ shows the order) |
-| a tab, a status chip, a group header | switches, filters, folds |
-| a hint in the footer | does what its key does (`s status`, `B board`, `? more`) |
-| right click on a row or card | a menu of the usual actions, each with its key |
-| inside any popup | click an item to pick it, the wheel moves, a click outside cancels |
-| a board card | selects it (twice opens it); drag it onto another column to change its status, after a confirm |
-| the wheel | scrolls the pane under the pointer (on macOS system Python the terminal library cannot say where the wheel turned down, so down uses the last pointer position) |
 
 ## Digest
 

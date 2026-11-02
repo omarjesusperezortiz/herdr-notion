@@ -15,9 +15,8 @@ Source: the UI proposal. Each task is done only when its tests pass (`python3 -m
 - [x] **T3 Save a view as a tab, tab manager, command palette.** `+` saves the current tab, status and search as a new tab.
   `T` opens the tab manager (rename, move, delete). `:` opens a palette of every command. Written to `config.toml` after a confirm.
   Tests: the saved filter combines tab, status and text; the written file loads back; delete/move/rename; palette runs a command.
-- [x] **T4 Mouse (opt-in).** `mouse = true` in config and `M` to toggle. Click selects, double click opens, click a tab or chip
-  switches, wheel scrolls the preview or the list. Default off.
-  Tests with fake mouse events only. Whether herdr forwards mouse events to a plugin pane is NOT verified.
+- [x] **T4 Mouse (opt-in).** Built, then removed: herdr already handles clicks and the wheel in the pane, and the plugin's
+  own mouse mode cost text selection and added bugs. Keyboard only.
 - [x] **T5 Marks and advance status.** `x` marks rows, `s` applies one status to all marked after one confirm.
   `>` moves the page to the next status.
   Tests: bulk write goes through once per page; `>` picks the next option; declining writes nothing.
@@ -25,7 +24,6 @@ Source: the UI proposal. Each task is done only when its tests pass (`python3 -m
 
 Last: README key table, in-app help, push, report what was tested only against fakes.
 
-Not built from T4: clicking a footer hint. Wheel-down: macOS system Python (ncurses 6.0) cannot report button 5 and getmouse() raises; the app treats that error as a wheel down at the last pointer position (checked with real mouse bytes in a pty).
 
 # Round 2 (from the "next round" artifact)
 
@@ -46,14 +44,6 @@ repository), the digest command's read path against the real database (read-only
 
 # Round 3: the mouse proposals
 
-- [x] **M1 Popups take the mouse** (click picks, wheel moves, click outside cancels; the help box scrolls with the wheel).
-- [x] **M2 Footer hints are buttons** (list, page, board; a hint naming several keys is not).
-- [x] **M3 Click a cell** (status word: status popup; other cells: that property's editor).
-- [x] **M4 Board drag** (press a card, release over another column: confirm, then the status is set).
-- [x] **M5 Right-click menu** (row or card; the box opens at the pointer).
-- [x] **M6 Column headers sort** (second click reverses; ▼ ▲). The EDITED column is two characters wider for the arrow.
-- [x] **M7 Click the bar to mark**, Shift or Alt click for a range. Many terminals keep Shift for text selection, so Alt may be the one that works.
-- [x] **M8 A click focuses the pane** (done earlier).
-
-Checked for real: the app reads real X10 mouse bytes sent to a pty (click, bar, header, right-click menu, footer hint, status popup,
-board drag with the confirm declined). Not verified: that herdr forwards mouse events to a plugin pane; whether Shift/Alt arrive in your terminal.
+All eight were built (clickable popups, footer hints, cells, board drag, right-click menu, sortable headers, click to mark,
+click to focus) and then removed again at the user's request: herdr's own mouse handling already gives clicks and scrolling,
+and the plugin's mode lost text selection. Commit `fb553b4` and the ones after it hold the code if it is ever wanted back.
