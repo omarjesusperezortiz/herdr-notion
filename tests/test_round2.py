@@ -288,5 +288,5 @@ class Relations(unittest.TestCase):
         app.detail = {"page": a, "lines": [], "body": "[x] one\n[ ] two"}
         app.dscroll = 0
         app.draw_detail()
-        self.assertTrue(scr.has("1 of 2 subtasks"))
+        self.assertTrue(scr.has("1/2"))
         self.assertTrue(scr.has("Related (1) [3]"))

@@ -887,7 +887,9 @@ class PageSections(unittest.TestCase):
     def test_properties_are_chips_and_the_header_shows_the_progress_bar_and_the_sections(self):
         app, scr, a, _ = self.page_app()
         app.draw_detail()
-        for text in ("Priority", "Owner Ada", "1 of 2 subtasks", "█", "Body", "Comments (2) [2]", "Related (2) [3]"):
+        app.cfg["summary"] = ["Owner"]
+        app.draw_detail()
+        for text in ("Ada", "1/2", "█", "Body [1]", "Comments (2) [2]", "Related (2) [3]", "i all properties"):
             self.assertTrue(scr.has(text), text)
         self.assertTrue(scr.has("Users land on /home"))  # the body is the first section
 
@@ -962,12 +964,32 @@ class PageSections(unittest.TestCase):
         app.draw_detail()
         self.assertFalse(scr.has("subtasks"))
 
-    def test_chips_wrap_on_a_narrow_pane_and_say_how_many_did_not_fit(self):
-        app, scr, a, _ = self.page_app(w=40)
-        for i in range(12):
-            a["properties"]["Extra%d" % i] = {"type": "rich_text", "rich_text": [{"plain_text": "value %d" % i}]}
+    def test_the_summary_is_one_line_in_the_configured_order_and_hides_the_rest(self):
+        app, scr, a, _ = self.page_app()
+        a["properties"]["Owner"] = {"type": "people", "people": [{"id": "u", "name": "Ada"}]}
+        a["properties"]["Reviewer"] = {"type": "people", "people": [{"id": "r", "name": "Linus"}]}
+        app.cfg["summary"] = ["Reviewer", "Owner"]
         app.draw_detail()
-        self.assertTrue(any("+10" in scr.row(y) for y in range(2, 8)))
+        row = scr.row(1)
+        self.assertLess(row.index("Linus"), row.index("Ada"))
+        self.assertIn(" · ", row)
+        self.assertFalse(scr.has("http"))  # the link is not on the page any more
+
+    def test_i_opens_every_property_and_the_link_and_closes_again(self):
+        app, scr, a, _ = self.page_app()
+        a["properties"]["Reviewer"] = {"type": "people", "people": [{"id": "r", "name": "Linus"}]}
+        app.cfg["summary"] = ["Owner"]
+        app.detail_key(ord("i"))
+        app.draw_detail()
+        self.assertTrue(scr.has("Properties"))
+        self.assertTrue(scr.has("Reviewer"))
+        self.assertTrue(scr.has("Link"))
+        app.detail_key(ord("j"))  # other keys do nothing while the box is open
+        self.assertTrue(app.show_props)
+        app.detail_key(ord("i"))
+        self.assertFalse(app.show_props)
+        app.draw_detail()
+        self.assertFalse(scr.has("Properties"))
 
     def test_a_click_on_a_section_label_switches_to_it(self):
         app, scr, _, _ = self.page_app()
@@ -987,7 +1009,7 @@ class PageSections(unittest.TestCase):
     def test_the_footer_names_the_section_key(self):
         app, scr, _, _ = self.page_app()
         app.draw_detail()
-        self.assertTrue(scr.has("Tab section"))
+        self.assertTrue(scr.has("1 2 3 sections"))
 
 
 class ChipValue(unittest.TestCase):

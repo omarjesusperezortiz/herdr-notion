@@ -89,6 +89,7 @@ class App:
         self.colors_ready = False  # the screen is up, so a new theme can be applied at once
         self.used_keys = set(self.read_json("usage.json").get("keys", []))  # keys you have pressed (for the tip line)
         self.synced_at, self.offline, self.me_name = None, "", ""  # when the list last came from Notion, why it did not, who is signed in
+        self.show_props = False  # the page view's properties box (i)
         self.dtab, self.drow = 0, 0  # section of the page view (Body, Comments, Related) and the selected linked page
         self.preview_mode = "ticket"  # a switches the preview to the agent's terminal
         self.agent_text = {}  # pane id -> (time fetched, lines)
@@ -1784,6 +1785,36 @@ class App:
         self.status_written(prop, kind, name, [(page["id"], old)], "%s set to %s" % (prop, name))
 
     DETAIL_TABS = ("Body", "Comments", "Related")
+    BODY_WIDTH = 100
+    SUMMARY = ("Assignee", "Sprint", "Priority", "Due", "Project", "Type")
+
+    def summary_parts(self, page):
+        """[(text, color key, bold)] for the page's summary line: the configured properties that have a value (or the first
+        few properties when none of them exist in this database)."""
+        props = [(k, v) for k, v in nt.page_properties(page) if k != self.cfg["status_property"]]
+        want = [n.lower() for n in (self.cfg.get("summary") or self.SUMMARY)]
+        by = {k.lower(): (k, v) for k, v in props}
+        chosen = [by[n] for n in want if n in by] or props[:5]
+        out = []
+        for k, v in chosen:
+            text, key, bold = self.cell_style(k, nt.chip_value(v))
+            out.append((("due " if k.lower() == "due" else "") + text, key, bold))
+        return out
+
+    def props_box(self, page, h, w):
+        """i: every property with a value, as an aligned table in a box over the page (the page's own link is left out)."""
+        own = {p for p, _, _ in nt.page_relations(page)} - {p for p, _, _ in self.related_pages(page)}
+        props = [(k, nt.chip_value(v, 300)) for k, v in nt.page_properties(page) if k != self.cfg["status_property"] and k not in own]
+        props.append(("Link", page.get("url", "")))
+        bw = max(24, min(w - 2, 72))
+        pad = min(18, max(len(k) for k, _ in props))
+        room = max(10, bw - 4 - pad - 2)
+        lines = []
+        for k, v in props:
+            parts = textwrap.wrap(v, room, break_long_words=True) or [""]
+            lines.append(("", "%s  %s" % (k[:pad].ljust(pad), parts[0])))
+            lines += [("", " " * (pad + 2) + x) for x in parts[1:]]
+        self.modal("Properties", lines, "i or Esc closes   o opens the page   y copies the link", width=bw)
 
     @staticmethod
     def related_pages(page):
@@ -1804,8 +1835,12 @@ class App:
                         "quote": curses.A_DIM, "fence": curses.A_DIM, "code": self.paint("teal"),
                         "done": self.paint("green"), "todo": 0}.get(kind, 0)
                 text = nt.display_line(l, kind)
-                wrapped = [text[i:i + w - 3] for i in range(0, max(len(text), 1), max(w - 3, 1))]
-                lines += [(" " + x, attr) for x in wrapped]
+                width = max(20, min(w - 8, self.BODY_WIDTH))  # a margin of 3 and at most 100 columns: lines stay readable on wide panes
+                ind = " " * (len(text) - len(text.lstrip(" ")))
+                hang = ind + ("  " if text.lstrip().startswith(("•", "☑", "☐")) else "")
+                wrapped = textwrap.wrap(text, width, initial_indent="", subsequent_indent=hang, drop_whitespace=False,
+                                        break_long_words=True) if text.strip() else [""]
+                lines += [("   " + x.rstrip(), attr) for x in wrapped]
         elif self.dtab == 1:
             comments = d.get("comments")
             if comments is None:
@@ -1838,37 +1873,28 @@ class App:
         self.scr.addnstr(0, 0, " ‹ " + nt.page_title(page), w - len(right) - 3, curses.A_BOLD)
         if len(right) + 2 < w:
             self.scr.addnstr(0, w - len(right) - 1, right, len(right), sattr | curses.A_BOLD)
-        self.rule(1, w)
-        y = 2
-        # properties as a row of "name value" chips, wrapped to at most three rows
-        x, used, hidden = 1, 0, 0
-        for k, v in nt.page_properties(page):
-            if k == self.cfg["status_property"]:
-                continue
-            text, key, bold = self.cell_style(k, nt.chip_value(v))
-            need = len(k) + 1 + nt.cell_width(text) + 2
-            if x + need > w - 1:
-                if used >= 2:
-                    hidden += 1
-                    continue
-                used, y, x = used + 1, y + 1, 1
-            self.scr.addnstr(y, x, k, max(w - 1 - x, 0), curses.A_DIM)
-            self.scr.addnstr(y, x + len(k) + 1, nt.clip(text, max(w - 2 - x - len(k), 1)), max(w - 2 - x - len(k), 1),
-                             self.paint(key) | (curses.A_BOLD if bold else 0))
-            x += need
-        if hidden:
-            more = "+%d" % hidden  # properties that did not fit
-            self.scr.addnstr(y, min(x, w - 1 - len(more)), more, len(more), curses.A_DIM | curses.A_BOLD)
-        y += 1
-        self.scr.addnstr(y, 1, page.get("url", ""), w - 2, curses.A_DIM)
-        y += 1
+        # one summary line: the few properties you read first, always in the same order; the subtask bar sits at its right end
         prog = nt.checklist_progress(self.detail["body"].split("\n"))
+        bar = ""
         if prog:
-            filled = round(10 * prog[0] / prog[1])
-            self.scr.addnstr(y, 1, "█" * filled, filled, self.paint("green"))
-            self.scr.addnstr(y, 1 + filled, "░" * (10 - filled), 10 - filled, curses.A_DIM)
-            self.scr.addnstr(y, 12, "%d of %d subtasks" % prog, w - 13)
-            y += 1
+            filled = round(5 * prog[0] / prog[1])
+            bar = "█" * filled + "░" * (5 - filled) + " %d/%d" % prog
+        room = w - 2 - (len(bar) + 2 if bar else 0)
+        x = 1
+        for i, (text, key, bold) in enumerate(self.summary_parts(page)):
+            need = nt.cell_width(text) + (3 if i else 0)
+            if x + need > room:
+                break
+            if i:
+                self.scr.addnstr(1, x, " · ", 3, curses.A_DIM)
+                x += 3
+            self.scr.addnstr(1, x, text, max(room - x, 1), self.paint(key) | (curses.A_BOLD if bold else 0))
+            x += nt.cell_width(text)
+        if bar:
+            filled = round(5 * prog[0] / prog[1])
+            self.scr.addnstr(1, w - len(bar) - 1, "█" * filled, filled, self.paint("green"))
+            self.scr.addnstr(1, w - len(bar) - 1 + filled, bar[filled:], len(bar) - filled, curses.A_DIM)
+        y = 2
         comments = self.detail.get("comments") or []
         rel = self.related_pages(page)
         counts = (0, len(comments), len(rel))
@@ -1878,6 +1904,10 @@ class App:
             self.scr.addnstr(y, x, label, max(w - 1 - x, 0), (self.paint("tab") | curses.A_BOLD) if n == self.dtab else curses.A_DIM)
             self.hits.append((y, x, x + len(label), "dtab", n))
             x += len(label) + 1
+        hint = "i all properties"
+        if x + len(hint) + 2 < w:
+            self.scr.addnstr(y, w - len(hint) - 1, hint, len(hint), curses.A_DIM)
+            self.hits.append((y, w - len(hint) - 1, w - 1, "key", ord("i")))
         y += 1
         self.rule(y, w)
         top = y + 1
@@ -1893,7 +1923,9 @@ class App:
         if len(lines) > view:
             ind = "%d%%" % min(100, 100 * (self.dscroll + view) // len(lines))
             self.scr.addnstr(h - 3, max(0, w - len(ind) - 2), ind, len(ind), curses.A_DIM)
-        self.footer([("s", "status"), ("e", "edit"), ("c", "comment"), ("Tab", "section"), ("d", "delegate"), ("o", "browser"), ("q", "back"), ("?", "more")])
+        if self.show_props:
+            self.props_box(page, h, w)
+        self.footer([("s", "status"), ("e", "edit"), ("c", "comment"), ("1 2 3", "sections"), ("i", "info"), ("d", "delegate"), ("o", "browser"), ("q", "back"), ("?", "more")])
 
     def footer(self, hints):
         h, w = self.scr.getmaxyx()
@@ -3934,7 +3966,15 @@ class App:
         h = self.scr.getmaxyx()[0]
         if k == curses.KEY_MOUSE:
             return self.on_mouse()
-        if k in (ord("q"), 27, curses.KEY_LEFT, ord("h")):
+        if self.show_props:  # the box answers to its own keys; o and y still work on the page behind it
+            if k in (ord("i"), ord("q"), 27, 10, 13, curses.KEY_ENTER):
+                self.show_props = False
+            elif k in (ord("o"), ord("y")):
+                self.common_key(k)
+            return True
+        if k == ord("i"):
+            self.show_props = True
+        elif k in (ord("q"), 27, curses.KEY_LEFT, ord("h")):
             if self.trail:  # came here from a related page: go back to it
                 self.open_page(self.trail.pop())
             else:

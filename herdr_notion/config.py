@@ -47,6 +47,7 @@ def normalize(raw):
         "data_source_id": n.get("data_source_id", ""),
         "status_property": n.get("status_property", "Status"),
         "columns": list(n.get("columns", [])),
+        "summary": [str(x) for x in n.get("summary", [])],
         "group_order": list(n.get("group_order", [])),
         "title_property": n.get("title_property", ""),
         "page_size": int(n.get("page_size", 50)),
