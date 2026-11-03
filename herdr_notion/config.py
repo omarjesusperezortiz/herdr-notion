@@ -64,6 +64,7 @@ def normalize(raw):
             "default_cwd": d.get("default_cwd", ""),
             "branch_prefix": str(d.get("branch_prefix", "")),
             "ask_note": bool(d.get("ask_note", True)),
+            "orchestrator": str(d.get("orchestrator", "")),
             "startup_delay_ms": int(d.get("startup_delay_ms", 1500)),
             "wait_ready_ms": int(d.get("wait_ready_ms", 30000)),
             "agents": d.get("agents") or [{"name": "claude", "command": ["claude"]}],

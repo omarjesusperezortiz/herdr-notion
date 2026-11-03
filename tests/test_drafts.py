@@ -118,5 +118,112 @@ class Reviewing(unittest.TestCase):
         self.assertEqual(app.toast_state["text"], "no drafts waiting")
 
 
+
+from unittest import mock
+
+from herdr_notion import delegate as dg
+
+AGENTS = [{"pane_id": "w1", "name": "api-worker", "agent": "claude", "status": "working", "cwd": "/x", "title": "busy"},
+          {"pane_id": "w2", "name": "orchestrator", "agent": "claude", "status": "idle", "cwd": "/y", "title": ""}]
+
+
+class Asking(unittest.TestCase):
+    def app(self):
+        state = tempfile.mkdtemp()
+        os.environ["HERDR_PLUGIN_STATE_DIR"] = state
+        app, scr = make_app([page(0, "Alpha")], state_dir=state)
+        app.client.discover = lambda: SCHEMA2
+        app.client.relation_options = lambda prop, query="", limit=30: [{"title": "Checkout", "url": "https://x/proj"}]
+        app.cfg = dict(app.cfg, filters=[{"name": "All"}], new_fields=[])
+        app.fidx = 0
+        return app, scr
+
+    def test_the_orchestrator_is_offered_first(self):
+        self.assertEqual([a["name"] for a in nf.orchestrator_first(AGENTS)], ["orchestrator", "api-worker"])
+        self.assertEqual([a["name"] for a in nf.orchestrator_first(AGENTS, "api-worker")], ["api-worker", "orchestrator"])
+        self.assertEqual([a["name"] for a in nf.orchestrator_first(AGENTS[:1])], ["api-worker"])
+
+    def test_the_prompt_has_the_request_the_choices_and_the_command(self):
+        text = nf.agent_prompt("route is empty", "Tickets", [("Priority", "select", ["High", "Low"]), ("Project", "relation", ["A", "B"]),
+                                                              ("SPs", "number", [])], "run-me --title ...", {"Project"})
+        for part in ("route is empty", "Priority: High | Low", "Project: A | B | ... (more exist)", "SPs: a number", "run-me --title",
+                     "Do not write to Notion yourself"):
+            self.assertIn(part, text)
+
+    def test_describe_pick_send(self):
+        app, scr = self.app()
+        sent = []
+        with mock.patch.object(dg, "list_agents", lambda: [dict(a) for a in AGENTS]), mock.patch.object(dg, "send_prompt", lambda pane, text: sent.append((pane, text))):
+            scr.keys = ["\x01"] + list("empty route after renewing") + ["\n"]
+            app.new_page()
+        self.assertEqual(sent[0][0], "w2")  # the orchestrator, first in the list
+        self.assertIn("empty route after renewing", sent[0][1])
+        self.assertIn("Priority: High | Low", sent[0][1])
+        self.assertIn("Project: Checkout", sent[0][1])
+        self.assertIn("python3 -m herdr_notion draft --to", sent[0][1])
+        self.assertEqual(app.client.writes, [])  # nothing written to Notion
+        self.assertIn("w2", app.asks)
+
+    def test_nothing_is_sent_without_a_description_and_the_form_comes_back(self):
+        app, scr = self.app()
+        sent = []
+        with mock.patch.object(dg, "list_agents", lambda: [dict(a) for a in AGENTS]), mock.patch.object(dg, "send_prompt", lambda pane, text: sent.append(pane)):
+            scr.keys = ["\x01", "\n", "\x01"] + list("Back in the form") + [BACK, "\n"]
+            app.new_page()
+        self.assertEqual(sent, [])
+        self.assertEqual(app.client.writes[-1][1], "Back in the form")
+
+    def test_the_pick_moves_down_the_list(self):
+        app, scr = self.app()
+        sent = []
+        with mock.patch.object(dg, "list_agents", lambda: [dict(a) for a in AGENTS]), mock.patch.object(dg, "send_prompt", lambda pane, text: sent.append(pane)):
+            scr.keys = ["\x01"] + list("x") + [__import__("curses").KEY_DOWN, "\n"]
+            app.new_page()
+        self.assertEqual(sent, ["w1"])
+
+    def test_herdr_not_reachable_keeps_the_form(self):
+        app, scr = self.app()
+
+        def boom():
+            raise dg.HerdrError("no socket")
+        with mock.patch.object(dg, "list_agents", boom):
+            scr.keys = ["\x01"] + list("Still here") + [BACK, "\n"]
+            app.new_page()
+        self.assertEqual(app.client.writes[-1][1], "Still here")
+
+    def test_an_answer_clears_the_wait_and_silence_says_so(self):
+        app, scr = self.app()
+        d = dr.drafts_dir()
+        app.asks = {"w2": {"name": "orchestrator", "text": "x", "at": 0}}
+        app.draft_count, app.next_draft_poll = 0, 0
+        dr.write_draft(d, "T", {}, "", "", "orchestrator")
+        app.poll_drafts()
+        self.assertEqual(app.asks, {})
+        import time
+        app.asks = {"w1": {"name": "api-worker", "text": "x", "at": time.time() - 1000}}
+        app.next_draft_poll = 0
+        app.poll_drafts()
+        self.assertIn("no draft from api-worker yet", app.toast_state["text"])
+        self.assertEqual(app.asks, {})
+
+
+
+class LongAgentList(unittest.TestCase):
+    def test_the_picked_agent_stays_in_view_with_thirty_agents(self):
+        state = tempfile.mkdtemp()
+        os.environ["HERDR_PLUGIN_STATE_DIR"] = state
+        app, scr = make_app([page(0, "Alpha")], h=30, state_dir=state)
+        agents = [{"pane_id": "w%d" % i, "name": "agent-%d" % i, "agent": "claude", "status": "idle", "cwd": "/x", "title": "t%d" % i} for i in range(30)]
+        app.cfg = dict(app.cfg, filters=[{"name": "All"}], new_fields=[])
+        app.fidx = 0
+        with mock.patch.object(dg, "list_agents", lambda: agents):
+            app.enter_ask({"fields": [], "body": ""} | {})
+        form = {"mode": "ask", "ask": {"text": "x", "sel": 20, "agents": agents}}
+        app.draw_ask(form)
+        self.assertTrue(scr.has("▸ ✓ agent-20"))
+        self.assertTrue(scr.has("more"))
+        self.assertTrue(scr.has("Esc cancel"))  # the box did not push its own footer out
+
+
 if __name__ == "__main__":
     unittest.main()

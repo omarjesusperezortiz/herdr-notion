@@ -144,3 +144,33 @@ def match_relation(found, value):
         if o["title"].strip().lower() == want:
             return o
     return found[0] if len(found) == 1 else None
+
+
+def orchestrator_first(agents, name=""):
+    """The agents with the orchestrator first: the one named `name` in the config, else the first whose name has 'orchestrator'."""
+    want = (name or "orchestrator").lower()
+
+    def rank(a):
+        label = (a.get("name") or a.get("agent") or "").lower()
+        return 0 if label == want else 1 if want in label else 2
+    return sorted(agents, key=rank)  # stable: herdr's order otherwise
+
+
+KIND_WORDS = {"number": "a number", "date": "a date, YYYY-MM-DD", "rich_text": "text", "url": "a link", "email": "an email", "phone_number": "a phone number"}
+
+
+def agent_prompt(request, database, fields, command, more=()):
+    """What an agent is told to draft a ticket: the request, the database's fields with the values they accept, and the one
+    command that hands the draft over. `fields` is [(name, kind, [options])]; `more` names fields with more options than shown."""
+    lines = ["Draft a Notion ticket for this request. Do not write to Notion yourself.", "", "Request:", request.strip(), "",
+             "Database: %s" % database, "Fields (use these exact values, and leave a field out when unsure):"]
+    for name, kind, opts in fields:
+        if opts:
+            lines.append("  %s: %s%s" % (name, " | ".join(opts), " | ... (more exist)" if name in more else ""))
+        else:
+            lines.append("  %s: %s" % (name, KIND_WORDS.get(kind, kind)))
+    lines += ["", "If you can, check first whether a ticket for this already exists. When the draft is ready, run this once:", "",
+              "  " + command, "",
+              "Repeat --set once per field (for example --set \"Priority=High\"). Put a short reason, or a possible duplicate, in --note. A person reviews the draft and creates the ticket; "
+              "run nothing else for this."]
+    return "\n".join(lines)

@@ -149,6 +149,8 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `O` / `g` | sort (newest edit, title, status) / group the rows by status (press `g` again to fold every group, once more for the plain list). While grouped, `↑` can land on a group header: `←` folds it, `→` opens it, `⏎` toggles; `←` on a page jumps up to its header, in the order the status options have in Notion (to do, in progress, done). Set `group_order = ["In progress", "To do"]` under `[notion]` to put some first |
 | `s` | change status: pick an option, then confirm in the box in the middle (`⏎` or `y`; `Esc` cancels) |
 | `n` | new ticket: a box in the middle with the title, the status and the other fields of your database (`new_fields` in `[notion]` chooses them; relations such as Assignee or Project open a searchable list) and an optional description. The tab you are on fills in what it keeps (on Mine, the ticket is yours), and the box says so. `Tab` / `⇧Tab` move, `⏎` picks, `⇧Tab` then `⏎` creates (quick capture: type the title and that), `^N` creates and opens a fresh form. If Notion refuses, the form stays open with what you typed. Your sort and grouping are left alone, and a tab that would not list the new ticket says so |
+| `^A` (in the new-ticket box) | **ask an agent to draft it**: describe the ticket in your own words and pick who drafts it (the orchestrator is listed first: the one named by `orchestrator` in `[delegate]`, else the first agent whose name has "orchestrator"; or start a new agent). The agent gets your words, the database's fields with the values they accept and one command to run. It only writes a draft; you review it with `N` and create it with `⏎` |
+| `N` | review ticket drafts agents handed over: the new-ticket box, filled in, saying who drafted it and why; values are checked against the database (a wrong option shows in red). `Esc` keeps the draft, `^D` discards it. The footer counts the drafts waiting |
 | `d` | delegate: pick a running agent (status, cwd) or **+ start new agent…**, then a box in the middle asks for an optional note, which goes above the task's link, and a second box shows exactly what will be sent (`⏎` sends, `Esc` cancels at either step; `ask_note = false` in `[delegate]` skips both and sends the task as it is) |
 | `o` | open the page in the browser |
 | `]` / `[` | next / previous page while reading one |
@@ -157,6 +159,8 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `S` | connection screen: who is signed in, the database; sign in again, pick another database, change the status property, reset the filter tabs, sign out |
 | `?` | help |
 | `Esc`, `q` | back / quit |
+
+**Drafts from any agent.** `python3 -m herdr_notion draft --title "…" --set "Priority=High" --body "…" --note "…"` (with `--to` pointing at the drafts folder, which the prompt of `^A` includes) saves a draft and never touches Notion or needs a login, so an agent in any pane can file a ticket it found while working. The pane notices it within a couple of seconds.
 
 In a pane 120 columns or wider the list gets a **preview pane** with the selected page's body. A **•** before a title
 means the page was edited after you last looked at it, and the list refreshes itself every minute.

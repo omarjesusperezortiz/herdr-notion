@@ -29,7 +29,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "remove the newest filter pill, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("N", "review the ticket drafts agents handed over (herdr-notion draft)"), ("n", "new ticket: a box with the fields you set (the tab you are on fills in what it keeps); Tab moves, ⇧Tab then ⏎ creates, ^N creates another"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("Y", "next theme: default, light, high-contrast, mono (kept in the config)"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("X", "close the pane of this ticket's finished agent (asks first)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("i", "in a page: every property in a box (o opens, y copies the link)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("N", "review the ticket drafts agents handed over (herdr-notion draft)"), ("n", "new ticket: a box with the fields you set (the tab you are on fills in what it keeps); Tab moves, ⇧Tab then ⏎ creates, ^N creates another, ^A asks an agent to draft it"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("Y", "next theme: default, light, high-contrast, mono (kept in the config)"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("X", "close the pane of this ticket's finished agent (asks first)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("i", "in a page: every property in a box (o opens, y copies the link)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -66,6 +66,7 @@ class App:
         self.delegations = self.load_delegations()  # page id -> {"pane", "agent", "title", "seen_working", "done"}
         self.finished = []  # page ids whose agent just went idle: the main loop offers to move them to review
         self.next_agent_poll = 0
+        self.asks = {}  # pane id -> {name, text, at}: agents asked to draft a ticket that has not arrived yet
         self.draft_count, self.next_draft_poll = len(dr.list_drafts(dr.drafts_dir())), 0
         self.found = {}  # page id -> agent matched from herdr's titles (not delegated from here)
         self.herdr_ok = True  # false once herdr cannot be reached: the quiet matching stops asking
@@ -1456,7 +1457,8 @@ class App:
                     [("↑↓/PgUp PgDn", "scroll"), ("←", "back to the list"), ("⏎", "open")] if self.focus == "preview" else
                     [("⏎", "open"), ("s", "status"), ("d", "delegate"), ("Tab", "next tab"), ("/", "search")]
                     + ([("→", "preview")] if wide else []) + [("e", "edit"), ("z", "compact"), ("n", "new")]
-                    + ([("N", "%d draft%s" % (self.draft_count, "" if self.draft_count == 1 else "s"))] if self.draft_count else []) + [("?", "more")])
+                    + ([("N", "%d draft%s" % (self.draft_count, "" if self.draft_count == 1 else "s"))] if self.draft_count else [])
+                    + ([("◐", "%s is drafting a ticket" % next(iter(self.asks.values()))["name"])] if self.asks else []) + [("?", "more")])
 
     # ------------------------------------------------------------ agents view
     def agent_rows(self):
@@ -2479,9 +2481,11 @@ class App:
         lines.append(("", ""))
         on = sel == n + 1
         lines.append(("accent" if on else "", "%s[ Create ⏎ ]" % ("▸ " if on else "  ")))
+        if not form.get("draft"):
+            lines += [("", ""), ("grey", "^N creates and opens another   ^A asks an agent to draft it")]
         self.background()
         self.modal(title, lines, "Tab next · ⇧Tab back · ⏎ pick · ^D discard · Esc keep for later" if form.get("draft") else
-                   "Tab next · ⇧Tab back · ⏎ pick · ^N create another · Esc cancel", width=66)
+                   "Tab next · ⇧Tab back · ⏎ pick · Esc cancel", width=66)
         self.scr.refresh()
 
     def form_pick(self, f):
@@ -2553,6 +2557,10 @@ class App:
     def run_form(self, form, schema):
         """The key loop of the box, for a fresh ticket or for a draft an agent made (form["draft"] is its file)."""
         while True:
+            if form.get("mode") == "ask":
+                if self.ask_step(form, schema):
+                    return
+                continue
             n = len(form["fields"])
             self.draw_form(form, "Draft" if form.get("draft") else "New ticket")
             k = self.scr.get_wch()
@@ -2562,6 +2570,9 @@ class App:
             if k in (curses.KEY_RESIZE, curses.KEY_MOUSE):
                 if k == curses.KEY_MOUSE:
                     self.read_mouse()
+                continue
+            if k == "\x01" and not form.get("draft"):
+                self.enter_ask(form)
                 continue
             if k == "\x04" and form.get("draft"):
                 dr.remove_draft(form["draft"])
@@ -2611,6 +2622,145 @@ class App:
                     f["text"] += k
                 elif f is not None and k == " ":
                     self.form_pick(f)
+
+    # ------------------------------------------------------------ ask an agent to draft the ticket
+    def enter_ask(self, form):
+        """^A in the box: describe the ticket in your own words and pick who drafts it (the orchestrator is first)."""
+        try:
+            self.note("Looking for agents…")
+            agents = nf.orchestrator_first(dg.list_agents(), self.cfg["delegate"].get("orchestrator", ""))
+        except dg.HerdrError as e:
+            self.toast("herdr is not reachable: %s" % e, "err")
+            return
+        form["mode"] = "ask"
+        form["ask"] = form.get("ask") or {"text": "", "sel": 0}
+        form["ask"]["agents"] = agents
+
+    def draw_ask(self, form):
+        a = form["ask"]
+        lines = [("", ""), ("grey", "Describe it in your own words"), ("", "")]
+        wrapped = textwrap.wrap(a["text"] + "▏", 58, drop_whitespace=False) or ["▏"]
+        lines += [("accent", "  " + l) for l in wrapped[-5:]]
+        lines += [("", ""), ("grey", "Ask")]
+        h, _ = self.scr.getmaxyx()
+        rows = a["agents"] + [None]  # the last row starts a new agent
+        room = max(3, min(8, h - 20))
+        first = max(0, min(a["sel"] - room + 1, len(rows) - room)) if a["sel"] >= room else 0
+        if first:
+            lines.append(("grey", "  ↑ %d more" % first))
+        for i in range(first, min(len(rows), first + room)):
+            ag, on = rows[i], i == a["sel"]
+            if ag is None:
+                lines.append(("accent" if on else "", "%s+ start a new agent…" % ("▸ " if on else "  ")))
+                continue
+            glyph = nt.agent_state(ag["status"])[0]
+            lines.append(("accent" if on else "", "%s%s %-14s %s" % ("▸ " if on else "  ", glyph, (ag["name"] or ag["agent"])[:14],
+                                                                  nt.clip(ag["title"] or self.tilde(ag["cwd"]), 36))))
+        if first + room < len(rows):
+            lines.append(("grey", "  ↓ %d more" % (len(rows) - first - room)))
+        lines += [("", ""), ("grey", "It drafts the ticket and you review it. Nothing reaches Notion until you press ⏎ on the draft.")]
+        self.background()
+        self.modal("New ticket · ask an agent", lines, "↑↓ agent · ⏎ send · ^A the form · Esc cancel", width=66)
+        self.scr.refresh()
+
+    def ask_step(self, form, schema):
+        """One key of the ask screen. True when the box should close (sent, or cancelled)."""
+        a = form["ask"]
+        self.draw_ask(form)
+        k = self.scr.get_wch()
+        if k in (curses.KEY_RESIZE, curses.KEY_MOUSE):
+            if k == curses.KEY_MOUSE:
+                self.read_mouse()
+            return False
+        if k == "\x1b":
+            return True
+        if k == "\x01":
+            form["mode"] = "form"
+        elif k == curses.KEY_UP:
+            a["sel"] = max(0, a["sel"] - 1)
+        elif k == curses.KEY_DOWN:
+            a["sel"] = min(len(a["agents"]), a["sel"] + 1)
+        elif k in ("\n", "\r"):
+            return self.send_ask(form, schema)
+        elif k in ("\x7f", "\b") or k == curses.KEY_BACKSPACE:
+            a["text"] = a["text"][:-1]
+        elif isinstance(k, str) and k.isprintable():
+            a["text"] += k
+        return False
+
+    def ticket_agent_command(self, name):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        import shlex
+        return ("PYTHONPATH=%s python3 -m herdr_notion draft --to %s --from %s --title \"...\" --set \"FIELD=VALUE\" --body \"...\" --note \"...\""
+                % (shlex.quote(root), shlex.quote(dr.drafts_dir()), shlex.quote(name)))
+
+    def field_options(self, form, schema):
+        """([(name, kind, [options])], names with more options than listed) for the agent: choices from the schema, and for
+        relations (Assignee, Project…) the first pages of the database they point to."""
+        from concurrent.futures import ThreadPoolExecutor
+        props, infos, more = schema["properties"], [], set()
+        fields = form["fields"][1:]
+
+        def look(f):
+            if f["kind"] in ("status", "select"):
+                return [o["name"] for o in props[f["name"]][f["kind"]].get("options", [])]
+            if f["kind"] == "relation":
+                try:
+                    found = [o["title"] for o in self.client.relation_options(f["name"], "", 25)]
+                except (nt.NotionError, oauth.OAuthError):
+                    return []
+                if len(found) >= 25:
+                    more.add(f["name"])
+                return found
+            return []
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for f, opts in zip(fields, pool.map(look, fields)):
+                infos.append((f["name"], f["kind"], opts))
+        return infos, more
+
+    def send_ask(self, form, schema):
+        a = form["ask"]
+        text = a["text"].strip()
+        if not text:
+            self.toast("describe the ticket first", "info", 3)
+            return False
+        agents, i = a["agents"], a["sel"]
+        try:
+            if i < len(agents):
+                pane, name = agents[i]["pane_id"], agents[i]["name"] or agents[i]["agent"]
+            else:
+                pane, name = self.start_ticket_agent()
+                if not pane:
+                    return False
+            self.note("Reading the database's options…")
+            infos, more = self.field_options(form, schema)
+            db = (schema.get("title") or [{}])[0].get("plain_text") or "this database"
+            self.note("Asking %s…" % name)
+            dg.send_prompt(pane, nf.agent_prompt(text, db, infos, self.ticket_agent_command(name), more))
+        except (dg.HerdrError, nt.NotionError, oauth.OAuthError) as e:
+            self.toast("not sent: %s" % e, "err")
+            return False
+        self.asks[pane] = {"name": name, "text": text, "at": time.time()}
+        self.toast("asked %s to draft it; the draft shows up here" % name, "info", 5)
+        return True
+
+    def start_ticket_agent(self):
+        """(pane, name) of a newly started agent for drafting, or (None, None) when cancelled: the same questions as d."""
+        dcfg = self.cfg["delegate"]
+        kinds = dcfg["agents"]
+        j = self.popup("Agent type", [k["name"] for k in kinds])
+        if j is None:
+            return None, None
+        cwds = dg.unique_cwds(dg.list_agents(), dcfg["default_cwd"])
+        c = self.popup("Working directory", cwds + ["type path…"])
+        if c is None:
+            return None, None
+        cwd = cwds[c] if c < len(cwds) else self.ask("cwd: ", os.getcwd())
+        if not cwd:
+            return None, None
+        self.note("Starting %s…" % kinds[j]["name"])
+        pane = dg.start_agent(kinds[j]["command"], os.path.expanduser(os.path.expandvars(cwd)), "ticket draft", dcfg, os.environ.get("HERDR_WORKSPACE_ID"))
+        return pane, kinds[j]["name"]
 
     def apply_draft(self, form, draft, schema):
         """Fill the form from a draft. Values are checked against the database: an option that does not exist, or a name that
@@ -2671,12 +2821,20 @@ class App:
                 return
         self.review_draft(*found[i])
 
+    ASK_WAIT = 300.0
+
     def poll_drafts(self):
         """Every couple of seconds look for drafts agents left; a new one gets a message in the middle."""
         if time.time() < self.next_draft_poll:
             return
         self.next_draft_poll = time.time() + 2
         found = dr.list_drafts(dr.drafts_dir())
+        if len(found) > self.draft_count and self.asks:
+            self.asks.pop(next(iter(self.asks)), None)  # the oldest question has its answer
+        for pane, ask in list(self.asks.items()):
+            if time.time() - ask["at"] > self.ASK_WAIT:
+                del self.asks[pane]
+                self.toast("no draft from %s yet (it may still be working: a shows its terminal on a ticket, A lists agents)" % ask["name"], "info", 8)
         if len(found) > self.draft_count and not self.detail:
             d = found[-1][1]
             self.toast("%s drafted “%s”: N reviews it" % (d.get("from") or "an agent", nt.clip(d["title"], 40)), "info", 8)
