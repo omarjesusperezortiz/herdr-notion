@@ -289,4 +289,4 @@ class Relations(unittest.TestCase):
         app.dscroll = 0
         app.draw_detail()
         self.assertTrue(scr.has("1 of 2 subtasks"))
-        self.assertTrue(scr.has("Related 1"))
+        self.assertTrue(scr.has("Related (1) [3]"))

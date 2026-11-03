@@ -7,8 +7,17 @@ from . import mcp, notion as nt, oauth
 
 
 def uid(ref):
-    """Bare user id from a `user://<id>` reference."""
-    return ref[len("user://"):] if isinstance(ref, str) and ref.startswith("user://") else ref
+    """Bare user id from a `user://<id>` reference. Comments write `user://<id>/<email>`: the email is not part of the id."""
+    if isinstance(ref, str) and ref.startswith("user://"):
+        return ref[len("user://"):].split("/", 1)[0]
+    return ref
+
+
+def email_of(ref):
+    """The email a comment's `user://<id>/<email>` reference carries, or ''."""
+    if isinstance(ref, str) and ref.startswith("user://") and "/" in ref[len("user://"):]:
+        return ref[len("user://"):].split("/", 1)[1]
+    return ""
 
 
 def person_ids(rows, schema):
@@ -238,10 +247,12 @@ class McpClient:
             for i, name in pool.map(one, todo):
                 self._users[i] = name or "(unknown user)"
 
-    def relation_urls(self, rows, schema):
+    def relation_urls(self, rows, schema, everything=False):
+        """Pages the rows link to, for the relation columns shown in the list, or for every relation column when a
+        single page is opened (its Related section lists them all)."""
         out = set()
         for row in rows:
-            for n in self.want:
+            for n in (schema["properties"] if everything else self.want):
                 if schema["properties"].get(n, {}).get("type") == "relation":
                     val = row.get(n) or row.get("userDefined:" + n)
                     if val:
@@ -411,7 +422,7 @@ class McpClient:
         row = tag_json(text, "properties")
         row.setdefault("url", page_id)
         self.resolve_users(person_ids([row], self.discover()))
-        self.resolve_titles(self.relation_urls([row], self.discover()))
+        self.resolve_titles(self.relation_urls([row], self.discover(), everything=True))
         return to_page(row, self.discover(), self._users, self._titles)
 
     def body_lines(self, page_id):
@@ -438,15 +449,23 @@ class McpClient:
             raw.append((a, body))
         ids = {uid(a.get("user-url", "")) for a, _ in raw if a.get("user-url")}
         for _, body in raw:
-            ids.update(m for m in re.findall(r'<mention url="user://([^"]+)"', body))
+            ids.update(uid("user://" + m) for m in re.findall(r'<mention url="user://([^"]+)"', body))
         self.resolve_users({i for i in ids if i})
-        out = [{"id": a.get("id", ""), "author": self._users.get(uid(a.get("user-url", "")), "someone"), "when": a.get("datetime", ""),
+        out = [{"id": a.get("id", ""), "author": self.author_name(a.get("user-url", "")), "when": a.get("datetime", ""),
                 "text": self.plain_comment(body)} for a, body in raw]
         return sorted(out, key=lambda c: c["when"])
 
+    def author_name(self, ref):
+        """The name behind a comment's user reference; the email's local part when the lookup finds nobody."""
+        name = self._users.get(uid(ref))
+        if name and name != "(unknown user)":
+            return name
+        local = email_of(ref).split("@")[0]
+        return local.replace(".", " ").title() if local else "someone"
+
     def plain_comment(self, body):
         import html
-        body = re.sub(r'<mention url="user://([^"]+)"\s*/?>(?:</mention>)?', lambda m: "@" + self._users.get(m.group(1), "someone"), body)
+        body = re.sub(r'<mention url="user://([^"]+)"\s*/?>(?:</mention>)?', lambda m: "@" + self.author_name("user://" + m.group(1)), body)
         body = re.sub(r"<mention[^>]*/>|<mention[^>]*>.*?</mention>", "(link)", body, flags=re.S)
         body = re.sub(r"<br\s*/?>", "\n", body)
         body = re.sub(r"</?(b|i|u|s|code|strong|em|span|del|ins)(\s[^>]*)?>", "", body)

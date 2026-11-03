@@ -64,7 +64,7 @@ class Comments(unittest.TestCase):
         settle(app)
         app.dtab = 1
         app.draw_detail()
-        self.assertTrue(scr.has("Comments 1"))
+        self.assertTrue(scr.has("Comments (1) [2]"))
         self.assertTrue(scr.has("Grace"))
         self.assertTrue(scr.has("ship behind a flag"))
 
@@ -151,10 +151,6 @@ class Databases(unittest.TestCase):
         self.assertIn("Loading", seen["loading"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class CommentText(unittest.TestCase):
     RAW = ('<discussions><discussion id="d1"><comment id="c1" url="https://x/p/1?d=1" user-url="user://u1" datetime="2026-10-30T09:00:00.000Z">'
            '<b>Title:</b> <br />Session does not appear<br /><br /><b>Steps:</b><br />1. Open <code>one_time_only</code>'
@@ -189,7 +185,66 @@ class CommentText(unittest.TestCase):
         app.dtab = 1
         app.draw_detail()
         text = scr.text()
-        self.assertIn("Comments 2", text)
+        self.assertIn("Comments (2) [2]", text)
         self.assertNotIn("<br", text)
         self.assertNotIn("<b>", text)
         self.assertIn("@Grace", text)
+
+
+class RealShapeAuthors(unittest.TestCase):
+    """Notion writes a comment's author as user://<id>/<email>: the name is looked up by the id alone."""
+    RAW = ('<discussions><discussion id="d1"><comment id="c1" url="https://x/p/1?d=1" user-url="user://u1/ada@example.com" '
+           'datetime="2026-10-30T09:00:00.000Z">Hi <mention url="user://u2/grace@example.com" /></comment>'
+           '<comment id="c2" url="https://x/p/1?d=1" user-url="user://u9/linus.torvalds@example.com" datetime="2026-10-30T10:00:00.000Z">Yo</comment>'
+           '</discussion></discussions>')
+
+    def client(self):
+        class Fake:
+            asked = []
+
+            def call(self, name, args=None):
+                if name == "notion-get-users":
+                    Fake.asked.append(args["user_id"])
+                    names = {"u1": "Ada Lovelace", "u2": "Grace Hopper"}
+                    return {"results": [{"id": args["user_id"], "name": names[args["user_id"]]}] if args["user_id"] in names else []}
+                return {"text": RealShapeAuthors.RAW}
+        self.fake = Fake
+        return mb.McpClient("ds", Fake())
+
+    def test_the_name_is_found_with_the_bare_id(self):
+        got = self.client().comments("https://x/p/1")
+        self.assertEqual(got[0]["author"], "Ada Lovelace")
+        self.assertEqual(got[0]["text"], "Hi @Grace Hopper")
+        self.assertTrue(all("/" not in i for i in self.fake.asked))
+
+    def test_an_unknown_person_reads_as_the_name_in_their_email(self):
+        got = self.client().comments("https://x/p/1")
+        self.assertEqual(got[1]["author"], "Linus Torvalds")
+
+
+class RelatedSection(unittest.TestCase):
+    def test_opening_a_page_names_every_linked_page_and_hides_its_own_link(self):
+        app, scr = make_app([dict(p) for p in PAGES], h=30, w=100)
+        page = {"id": "https://x/p/me", "url": "https://x/p/me", "properties": {
+            "Self": {"type": "relation", "relation": [{"id": "https://x/p/me", "title": "me"}]},
+            "Project": {"type": "relation", "relation": [{"id": "https://x/p/pr", "title": "Checkout rewrite"}]}}}
+        self.assertEqual([(p, t) for p, _, t in type(app).related_pages(page)], [("Project", "Checkout rewrite")])
+        self.assertEqual(type(app).related_pages({"id": "x", "properties": {}}), [])
+
+    def test_a_single_page_resolves_titles_of_all_its_relation_columns(self):
+        seen = []
+
+        class Fake:
+            def call(self, name, args=None):
+                if name == "notion-fetch" and args["id"].startswith("collection://"):
+                    return {"text": ""}
+                seen.append(args)
+                return {"title": "Linked", "text": ""}
+        c = mb.McpClient("ds", Fake())
+        c._schema = {"properties": {"Project": {"type": "relation"}, "Name": {"type": "title"}}}
+        self.assertEqual(c.relation_urls([{"Project": ["https://x/p/a?x=1"]}], c._schema), set())  # not shown in the list
+        self.assertEqual(c.relation_urls([{"Project": ["https://x/p/a?x=1"]}], c._schema, everything=True), {"https://x/p/a"})
+
+
+if __name__ == "__main__":
+    unittest.main()

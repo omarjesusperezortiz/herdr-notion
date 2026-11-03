@@ -887,7 +887,7 @@ class PageSections(unittest.TestCase):
     def test_properties_are_chips_and_the_header_shows_the_progress_bar_and_the_sections(self):
         app, scr, a, _ = self.page_app()
         app.draw_detail()
-        for text in ("Priority", "Owner Ada", "1 of 2 subtasks", "█", "Body", "Comments 2", "Related 2"):
+        for text in ("Priority", "Owner Ada", "1 of 2 subtasks", "█", "Body", "Comments (2) [2]", "Related (2) [3]"):
             self.assertTrue(scr.has(text), text)
         self.assertTrue(scr.has("Users land on /home"))  # the body is the first section
 

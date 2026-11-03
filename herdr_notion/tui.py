@@ -1785,6 +1785,14 @@ class App:
 
     DETAIL_TABS = ("Body", "Comments", "Related")
 
+    @staticmethod
+    def related_pages(page):
+        """The pages this one links to, without the page itself (a Self column links every page to itself)."""
+        def key(u):
+            return (u or "").split("?")[0].rstrip("/").split("/")[-1].replace("-", "")
+        me = key(page.get("id", "")) or key(page.get("url", ""))
+        return [r for r in nt.page_relations(page) if not me or key(r[1]) != me]
+
     def detail_lines(self, w):
         """[(text, attr)] of the section being read: the body, the comments as a conversation, or the linked pages."""
         d = self.detail
@@ -1805,13 +1813,15 @@ class App:
             elif not comments:
                 lines.append((" No comments yet · c writes one", curses.A_DIM))
             for c_ in comments or []:
-                lines.append((" %s · %s ago" % (c_["author"], nt.relative_time(c_["when"])), curses.A_BOLD | self.paint("amber")))
+                ago = nt.relative_time(c_["when"])
+                when = "" if not ago else " · just now" if ago == "now" else " · %s ago" % ago
+                lines.append((" %s%s" % (c_["author"], when), curses.A_BOLD | self.paint("amber")))
                 for para in (c_["text"].split("\n") or [""]):
                     for piece in (textwrap.wrap(para, max(w - 5, 10)) or [""]):
                         lines.append(("   " + piece, 0))
                 lines.append(("", 0))
         else:
-            rel = nt.page_relations(d["page"])
+            rel = self.related_pages(d["page"])
             if not rel:
                 lines.append((" No linked pages", curses.A_DIM))
             for n, (prop, _, title) in enumerate(rel):
@@ -1860,11 +1870,11 @@ class App:
             self.scr.addnstr(y, 12, "%d of %d subtasks" % prog, w - 13)
             y += 1
         comments = self.detail.get("comments") or []
-        rel = nt.page_relations(page)
+        rel = self.related_pages(page)
         counts = (0, len(comments), len(rel))
         x = 1
         for n, name in enumerate(self.DETAIL_TABS):
-            label = " %s%s " % (name, " %d" % counts[n] if counts[n] else "")
+            label = " %s%s [%d] " % (name, " (%d)" % counts[n] if counts[n] else "", n + 1)
             self.scr.addnstr(y, x, label, max(w - 1 - x, 0), (self.paint("tab") | curses.A_BOLD) if n == self.dtab else curses.A_DIM)
             self.hits.append((y, x, x + len(label), "dtab", n))
             x += len(label) + 1
@@ -3715,7 +3725,12 @@ class App:
     def open_related(self):
         """L: pick one of the pages linked from this page (relations) and open it; ← comes back."""
         page = self.current()
-        rel = nt.page_relations(page) if page else []
+        if page and any(not t for _, _, t in self.related_pages(page)):  # the list only knew the links: read the page for their titles
+            try:
+                page = self.client.get_page(page["id"])
+            except nt.NotionError:
+                pass
+        rel = self.related_pages(page) if page else []
         if not rel:
             self.msg = "this page has no linked pages"
             return
@@ -3940,7 +3955,7 @@ class App:
             else:
                 self.dscroll = max(0, self.dscroll - 1)
         elif k in (10, 13, curses.KEY_ENTER) and self.dtab == 2:
-            rel = nt.page_relations(self.detail["page"])
+            rel = self.related_pages(self.detail["page"])
             if rel:
                 self.guard(self.open_relation, rel[min(self.drow, len(rel) - 1)][1])
         elif k in (curses.KEY_NPAGE, ord(" ")):
