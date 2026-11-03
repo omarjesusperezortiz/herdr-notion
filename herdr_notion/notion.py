@@ -283,8 +283,8 @@ def short_stamp(iso):
 
 def checklist_progress(lines):
     """(done, total) of the to-do lines ([x] and [ ]) in a flattened body, or None when there are none."""
-    marks = [l.lstrip()[:3] for l in lines if l.lstrip().startswith(("[x]", "[ ]"))]
-    return (marks.count("[x]"), len(marks)) if marks else None
+    marks = [CHECK.match(l.lstrip()).group(1) for l in lines if CHECK.match(l.lstrip())]
+    return (sum(1 for m in marks if m in "xX"), len(marks)) if marks else None
 
 
 def page_relations(page):
@@ -396,6 +396,10 @@ def agent_state(status, done=False):
     return "○", "grey", "sent"
 
 
+CHECK = re.compile(r"^(?:[-*]\s+)?\[( |x|X)\]\s*")  # "[ ] text", "- [x] text"
+CALLOUT = "\x05"  # first character of a line that sits inside a callout box
+
+
 def style_lines(lines):
     """Classify flattened body lines for display: heading, rule, todo, done,
     quote, fence, code or plain. Tracks ``` fences across lines."""
@@ -407,14 +411,14 @@ def style_lines(lines):
             out.append("fence")
         elif in_code:
             out.append("code")
+        elif t.startswith(CALLOUT):
+            out.append("callout")
         elif t.startswith("#"):
             out.append("heading")
         elif t == "---":
             out.append("rule")
-        elif t.startswith("[x]"):
-            out.append("done")
-        elif t.startswith("[ ]"):
-            out.append("todo")
+        elif CHECK.match(t):
+            out.append("done" if CHECK.match(t).group(1) in "xX" else "todo")
         elif t.startswith(">"):
             out.append("quote")
         else:
@@ -426,14 +430,16 @@ def display_line(line, kind):
     """Text to draw for a styled body line (markers swapped for nicer glyphs)."""
     ind = line[:len(line) - len(line.lstrip())]
     t = line.lstrip()
+    if kind == "callout":
+        return t.lstrip(CALLOUT)
     if kind == "heading":
         return ind + t.lstrip("#").strip()
     if kind == "quote":
         return ind + "▎ " + t[1:].lstrip()
     if kind == "done":
-        return ind + "☑ " + t[3:].strip()
+        return ind + "☑ " + t[CHECK.match(t).end():].strip()
     if kind == "todo":
-        return ind + "☐ " + t[3:].strip()
+        return ind + "☐ " + t[CHECK.match(t).end():].strip()
     if kind == "rule":
         return ind + "─" * 20
     if t.startswith("- "):
@@ -538,3 +544,98 @@ def render_prompt(template, page, body, max_body_chars=6000):
 
 
 # ---------------------------------------------------------------------- client
+
+
+# ---------------------------------------------------------------- inline styles
+# A body line may carry toggles: BOLD, CODE, LINK and ITALIC switch a style on and off where they stand.
+BOLD, CODE, LINK, ITALIC = "\x01", "\x02", "\x03", "\x04"
+F_BOLD, F_CODE, F_LINK, F_ITALIC, F_BAR, F_DIM = 1, 2, 4, 8, 16, 32
+_TOGGLE = {BOLD: F_BOLD, CODE: F_CODE, LINK: F_LINK, ITALIC: F_ITALIC}
+
+
+def plain(line):
+    """The line without its style toggles."""
+    return re.sub("[\x01-\x05]", "", line)
+
+
+def styled_chars(line):
+    """[(char, flags)] of a line: toggles are consumed and set the flags of the characters after them."""
+    out, flags = [], 0
+    for ch in line:
+        if ch in _TOGGLE:
+            flags ^= _TOGGLE[ch]
+        elif ch != CALLOUT:
+            out.append((ch, flags))
+    return out
+
+
+def wrap_rich(line, width, hang="", first="", flags_first=0, flags_hang=0):
+    """Word-wrap a line that carries toggles. Returns rows of runs [(text, flags)]; the first row starts with `first`, the
+    next ones with `hang` (both plain). Words longer than the row are cut."""
+    chars = styled_chars(line)
+    rows, row, used = [], [], 0
+
+    def start(prefix, f):
+        return ([(prefix, f)] if prefix else []), cell_width(prefix)
+
+    row, used = start(first, flags_first)
+    word = []
+
+    def put(cs):
+        nonlocal row, used
+        for ch, f in cs:
+            if row and row[-1][1] == f:
+                row[-1] = (row[-1][0] + ch, f)
+            else:
+                row.append((ch, f))
+        used += sum(cell_width(c) for c, _ in cs)
+
+    def newrow():
+        nonlocal rows, row, used
+        # trailing spaces never start a row nor end one
+        while row and not row[-1][0].strip():
+            row.pop()
+        if row and not row[-1][0].strip(" "):
+            row.pop()
+        if row:
+            row[-1] = (row[-1][0].rstrip(" "), row[-1][1])
+        rows.append(row)
+        row, used = start(hang, flags_hang)
+
+    tokens, cur = [], []
+    for ch, f in chars:
+        if ch == " ":
+            cur.append((ch, f))
+            tokens.append(cur)
+            cur = []
+        else:
+            if cur and cur[-1][0] == " ":
+                tokens.append(cur)
+                cur = []
+            cur.append((ch, f))
+    if cur:
+        tokens.append(cur)
+    room = max(4, width)
+    for tok in tokens:
+        w = sum(cell_width(c) for c, _ in tok)
+        wtext = sum(cell_width(c) for c, _ in tok if c != " ")
+        base = cell_width(hang)
+        if used + wtext > width and used > base:
+            newrow()
+        while wtext > room - base and wtext > 0:  # a word wider than the row: cut it
+            cut, acc = 0, 0
+            for i, (c, _) in enumerate(tok):
+                if acc + cell_width(c) > room - used:
+                    break
+                acc += cell_width(c)
+                cut = i + 1
+            if cut == 0:
+                newrow()
+                continue
+            put(tok[:cut])
+            tok = tok[cut:]
+            newrow()
+            wtext = sum(cell_width(c) for c, _ in tok if c != " ")
+        put(tok)
+    newrow() if row else None
+    return rows or [[("", 0)]]

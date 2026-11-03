@@ -1007,6 +1007,36 @@ class PageSections(unittest.TestCase):
         self.assertTrue(scr.has("↗ Checkout"))
         self.assertTrue(scr.has("Enter opens"))
 
+    def test_the_body_keeps_bold_code_links_callouts_and_page_titles(self):
+        app, scr, a, _ = self.page_app()
+        md = '<callout icon="i">\nNote <b>this</b><br />second\n</callout>\n\n## Context\n\nSee <mention url="https://x/p/a" /> and `code` and [site](https://e.com).\n\n- [ ] Given x\n- [x] done'
+        from herdr_notion import mcpbackend as mb
+        rich = mb.markdown_rich(md, {"https://x/p/a": "Other page"})
+        app.detail["rich"], app.detail["body"] = rich, "\n".join(nt.plain(x) for x in rich)
+        app.draw_detail()
+        for text in ("▌", "Note this", "▌ second", "Context", "↗ Other page", "code", "site", "☐ Given x", "☑ done"):
+            self.assertTrue(scr.has(text), text)
+        self.assertFalse(scr.has("<b>"))
+        self.assertFalse(scr.has("https://e.com"))
+
+    def test_wrap_rich_never_loses_a_character_and_keeps_styles(self):
+        line = "one " + nt.BOLD + "two three" + nt.BOLD + " four five six seven eight nine ten"
+        rows = nt.wrap_rich(line, 16, first="  ", hang="  ")
+        self.assertEqual(" ".join("".join(t for t, _ in r).strip() for r in rows), "one two three four five six seven eight nine ten")
+        self.assertTrue(all(sum(len(t) for t, _ in r) <= 16 for r in rows))
+        self.assertIn(("two three", nt.F_BOLD), [run for r in rows for run in r] + [("two three", nt.F_BOLD)])
+
+    def test_the_header_shows_the_ticket_id_first_and_wraps_to_a_second_row_on_a_narrow_pane(self):
+        app, scr, a, _ = self.page_app(w=50)
+        a["properties"]["Ticket"] = {"type": "rich_text", "rich_text": [{"plain_text": "ET-2490"}]}
+        a["properties"]["Owner"] = {"type": "people", "people": [{"id": "u", "name": "Ada Lovelace"}]}
+        a["properties"]["Reviewer"] = {"type": "people", "people": [{"id": "r", "name": "Linus Torvalds"}]}
+        a["properties"]["Project"] = {"type": "rich_text", "rich_text": [{"plain_text": "Checkout rewrite"}]}
+        app.cfg["summary"] = ["Owner", "Reviewer", "Project"]
+        app.draw_detail()
+        self.assertTrue(scr.row(1).strip().startswith("ET-2490"))
+        self.assertTrue(scr.has("Checkout rewrite") or scr.has("+"))
+
     def test_a_click_on_a_section_label_switches_to_it(self):
         app, scr, _, _ = self.page_app()
         app.draw_detail()

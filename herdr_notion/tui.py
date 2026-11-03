@@ -109,6 +109,7 @@ class App:
         self.detail = None  # {"page", "lines"}
         self.dscroll = 0
         self.cache = {}  # page id -> body lines
+        self.rich = {}  # page id -> the same lines with bold, code and link toggles (the page view draws these)
         self.title_prop = ""
         self.groups = {}
         self.colors = False
@@ -611,18 +612,35 @@ class App:
         self.dscroll = 0
 
         def work():
-            fresh = self.client.get_page(pid)
-            try:
-                comments = self.client.comments(pid)
-            except (nt.NotionError, AttributeError):
-                comments = []
-            return fresh, self.cache.get(pid) or self.client.body_lines(pid), comments
+            def get_comments():
+                try:
+                    return self.client.comments(pid)
+                except (nt.NotionError, AttributeError):
+                    return []
+
+            def get_rich():
+                rich = self.rich.get(pid)
+                if rich is None and hasattr(self.client, "body_rich"):
+                    try:
+                        rich = self.client.body_rich(pid)
+                    except nt.NotionError:
+                        rich = None
+                return rich
+
+            from concurrent.futures import ThreadPoolExecutor  # the page, its comments and its body are three separate reads
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                f_page, f_comments, f_rich = pool.submit(self.client.get_page, pid), pool.submit(get_comments), pool.submit(get_rich)
+                fresh, comments, rich = f_page.result(), f_comments.result(), f_rich.result()
+            body = self.cache.get(pid) or ([nt.plain(x) for x in rich] if rich is not None else self.client.body_lines(pid))
+            return fresh, body, comments, rich
 
         def done(r):
-            fresh, body, comments = r
+            fresh, body, comments, rich = r
             self.cache[pid] = body
+            if rich is not None:
+                self.rich[pid] = rich
             if self.detail and self.detail["page"]["id"] == pid:
-                self.detail = {"page": fresh, "lines": [], "body": "\n".join(body), "comments": comments}
+                self.detail = {"page": fresh, "lines": [], "body": "\n".join(body), "comments": comments, "rich": rich}
 
         self.start_job("Loading page…", work, done, "detail")
 
@@ -1787,19 +1805,30 @@ class App:
     DETAIL_TABS = ("Body", "Comments", "Related")
     BODY_WIDTH = 100
     AUTHOR_COLORS = ("amber", "teal", "blue", "purple", "green", "orange")  # one per person in a thread
-    SUMMARY = ("Assignee", "Sprint", "Priority", "Due", "Project", "Type")
+    SUMMARY = ("Id", "Assignee", "Reviewer", "QA", "Priority", "Due", "Sprint", "Project", "Type", "SPs", "Initiative", "Branch")
+    LABELS = {"reviewer": "review ", "qa": "QA ", "due": "due ", "branch": "⎇ "}
 
     def summary_parts(self, page):
-        """[(text, color key, bold)] for the page's summary line: the configured properties that have a value (or the first
-        few properties when none of them exist in this database)."""
+        """[(label, text, color key, bold)] for the page's summary rows: the ticket id first, then the configured properties that
+        have a value (or the first few properties when none of them exist in this database)."""
         props = [(k, v) for k, v in nt.page_properties(page) if k != self.cfg["status_property"]]
         want = [n.lower() for n in (self.cfg.get("summary") or self.SUMMARY)]
         by = {k.lower(): (k, v) for k, v in props}
-        chosen = [by[n] for n in want if n in by] or props[:5]
         out = []
+        tid = nt.page_ticket_id(page)
+        if tid:
+            out.append(("", tid, "accent", True))
+        chosen = [by[n] for n in want if n in by] or props[:5]
         for k, v in chosen:
+            if k.lower() in ("id", "ticket") and tid:
+                continue
+            if k.lower() in ("id", "ticket", "no.", "number") and v.strip().isdigit():
+                out.append(("", (self.cfg.get("id_prefix") or "#") + v.strip(), "accent", True))
+                continue
             text, key, bold = self.cell_style(k, nt.chip_value(v))
-            out.append((("due " if k.lower() == "due" else "") + text, key, bold))
+            if k.lower() == "sps":
+                text += " SP"
+            out.append((self.LABELS.get(k.lower(), ""), text, key, bold))
         return out
 
     def props_box(self, page, h, w):
@@ -1825,6 +1854,65 @@ class App:
         me = key(page.get("id", "")) or key(page.get("url", ""))
         return [r for r in nt.page_relations(page) if not me or key(r[1]) != me]
 
+    def run_attr(self, base, f):
+        """Attribute of a run of body text: the line's own look plus bold, code, link and italic."""
+        a = base
+        if f & nt.F_BOLD:
+            a |= curses.A_BOLD
+        if f & nt.F_CODE:
+            a = (a & ~curses.A_COLOR) | self.paint("teal")
+        if f & nt.F_LINK:
+            a = (a & ~curses.A_COLOR) | self.paint("blue") | curses.A_UNDERLINE
+        if f & nt.F_ITALIC:
+            a |= getattr(curses, "A_ITALIC", curses.A_DIM)
+        if f & nt.F_BAR:
+            a = (a & ~curses.A_COLOR) | self.paint("blue")
+        return a
+
+    def body_rows(self, lines, body, w):
+        """Append the body to `lines` as rows of styled runs: headings with air above, callouts in a bar, bullets and to-dos
+        hanging, bold / code / links in their own style, and long lines cut at a word."""
+        width = max(20, min(w - 8, self.BODY_WIDTH))  # a margin of 3 and at most 100 columns
+        margin = "   "
+        kinds = nt.style_lines([nt.plain(x) if not x.startswith(nt.CALLOUT) else x for x in body])
+        prev_blank = True
+        for raw, kind in zip(body, kinds):
+            text = nt.display_line(raw, kind)
+            flat = nt.plain(text)
+            if kind == "heading":
+                if not prev_blank:
+                    lines.append(("", 0))
+                head = nt.plain(raw).lstrip()
+                level = len(head) - len(head.lstrip("#"))
+                attr = (curses.A_BOLD | curses.A_UNDERLINE) if level <= 1 else curses.A_BOLD
+                for row in nt.wrap_rich(text, width, first=margin, hang=margin):
+                    lines.append(("".join(t for t, _ in row), attr, row))
+                prev_blank = False
+                continue
+            if kind == "rule":
+                lines.append((margin + "─" * min(width, 40), curses.A_DIM))
+                prev_blank = False
+                continue
+            if not flat.strip():
+                lines.append(("", 0))
+                prev_blank = True
+                continue
+            prev_blank = False
+            ind = " " * (len(flat) - len(flat.lstrip(" ")))
+            glyph = re.match(r"\s*(?:[•☑☐]|\d+[.)])\s", flat)
+            hang = ind + (" " * (len(glyph.group(0).strip()) + 1) if glyph else "")
+            attr = {"quote": curses.A_DIM, "fence": curses.A_DIM, "code": self.paint("teal"), "done": self.paint("green")}.get(kind, 0)
+            if kind == "callout":
+                for row in nt.wrap_rich(text, width - 2, first="", hang=""):
+                    runs = [(margin, 0), ("▌ ", nt.F_BAR)] + row
+                    lines.append(("".join(t for t, _ in runs), 0, runs))
+                continue
+            if kind in ("fence", "code"):
+                lines.append((margin + flat, attr))
+                continue
+            for row in nt.wrap_rich(text, width, first=margin, hang=margin + hang):
+                lines.append(("".join(t for t, _ in row), attr, row))
+
     def status_of_id(self, pid):
         """(mark, text, attr) of a linked page's status when that page is in the loaded list, else None."""
         key = (pid or "").split("?")[0].rstrip("/").split("/")[-1].replace("-", "")
@@ -1838,18 +1926,8 @@ class App:
         d = self.detail
         lines = []
         if self.dtab == 0:
-            body = d["body"].split("\n")
-            for l, kind in zip(body, nt.style_lines(body)):
-                attr = {"heading": curses.A_BOLD | curses.A_UNDERLINE, "rule": curses.A_DIM,
-                        "quote": curses.A_DIM, "fence": curses.A_DIM, "code": self.paint("teal"),
-                        "done": self.paint("green"), "todo": 0}.get(kind, 0)
-                text = nt.display_line(l, kind)
-                width = max(20, min(w - 8, self.BODY_WIDTH))  # a margin of 3 and at most 100 columns: lines stay readable on wide panes
-                ind = " " * (len(text) - len(text.lstrip(" ")))
-                hang = ind + ("  " if text.lstrip().startswith(("•", "☑", "☐")) else "")
-                wrapped = textwrap.wrap(text, width, initial_indent="", subsequent_indent=hang, drop_whitespace=False,
-                                        break_long_words=True) if text.strip() else [""]
-                lines += [("   " + x.rstrip(), attr) for x in wrapped]
+            body = d.get("rich") or d["body"].split("\n")
+            self.body_rows(lines, body, w)
         elif self.dtab == 1:
             comments = d.get("comments")
             if comments is None:
@@ -1901,28 +1979,39 @@ class App:
         self.scr.addnstr(0, 0, " ‹ " + nt.page_title(page), w - len(right) - 3, curses.A_BOLD)
         if len(right) + 2 < w:
             self.scr.addnstr(0, w - len(right) - 1, right, len(right), sattr | curses.A_BOLD)
-        # one summary line: the few properties you read first, always in the same order; the subtask bar sits at its right end
+        # the summary rows: ticket id and the properties you read first, always in the same order, packed into at most two
+        # rows; the subtask bar sits at the right end of the first one
         prog = nt.checklist_progress(self.detail["body"].split("\n"))
         bar = ""
         if prog:
             filled = round(5 * prog[0] / prog[1])
             bar = "█" * filled + "░" * (5 - filled) + " %d/%d" % prog
-        room = w - 2 - (len(bar) + 2 if bar else 0)
-        x = 1
-        for i, (text, key, bold) in enumerate(self.summary_parts(page)):
-            need = nt.cell_width(text) + (3 if i else 0)
+        y, x, hidden = 1, 1, 0
+        for i, (label, text, key, bold) in enumerate(self.summary_parts(page)):
+            room = w - 2 - (len(bar) + 2 if bar and y == 1 else 0)
+            need = nt.cell_width(label) + nt.cell_width(text) + (3 if x > 1 else 0)
             if x + need > room:
-                break
-            if i:
-                self.scr.addnstr(1, x, " · ", 3, curses.A_DIM)
+                if y >= 2:
+                    hidden += 1
+                    continue
+                y, x = y + 1, 1
+                need -= 3 if need > nt.cell_width(label) + nt.cell_width(text) else 0
+            if x > 1:
+                self.scr.addnstr(y, x, " · ", 3, curses.A_DIM)
                 x += 3
-            self.scr.addnstr(1, x, text, max(room - x, 1), self.paint(key) | (curses.A_BOLD if bold else 0))
+            if label:
+                self.scr.addnstr(y, x, label, max(w - 1 - x, 0), curses.A_DIM)
+                x += nt.cell_width(label)
+            self.scr.addnstr(y, x, text, max(w - 1 - x, 1), self.paint(key) | (curses.A_BOLD if bold else 0))
             x += nt.cell_width(text)
+        if hidden:
+            more = " +%d" % hidden
+            self.scr.addnstr(y, min(x, w - 1 - len(more)), more, len(more), curses.A_DIM | curses.A_BOLD)
         if bar:
             filled = round(5 * prog[0] / prog[1])
             self.scr.addnstr(1, w - len(bar) - 1, "█" * filled, filled, self.paint("green"))
             self.scr.addnstr(1, w - len(bar) - 1 + filled, bar[filled:], len(bar) - filled, curses.A_DIM)
-        y = 2
+        y += 1
         comments = self.detail.get("comments") or []
         rel = self.related_pages(page)
         counts = (0, len(comments), len(rel))
@@ -1932,10 +2021,10 @@ class App:
             self.scr.addnstr(y, x, label, max(w - 1 - x, 0), (self.paint("tab") | curses.A_BOLD) if n == self.dtab else curses.A_DIM)
             self.hits.append((y, x, x + len(label), "dtab", n))
             x += len(label) + 1
-        hint = "i all properties"
+        hint = "· i all properties"  # right after the tabs: a long blank run after a colored label gets painted with its background
         if x + len(hint) + 2 < w:
-            self.scr.addnstr(y, w - len(hint) - 1, hint, len(hint), curses.A_DIM)
-            self.hits.append((y, w - len(hint) - 1, w - 1, "key", ord("i")))
+            self.scr.addnstr(y, x + 1, hint, len(hint), curses.A_DIM)
+            self.hits.append((y, x + 3, x + 1 + len(hint), "key", ord("i")))
         y += 1
         self.rule(y, w)
         top = y + 1
@@ -1949,6 +2038,14 @@ class App:
         for r, (l, attr, *more) in enumerate(lines[self.dscroll:self.dscroll + view]):
             extra, bar = (more + [None, None])[:2]
             y_ = top + r
+            if isinstance(extra, list):  # runs of styled text: body rows
+                x_ = 0
+                for text_, f_ in extra:
+                    if x_ >= w - 1:
+                        break
+                    self.scr.addnstr(y_, x_, text_, w - 1 - x_, self.run_attr(attr, f_))
+                    x_ += nt.cell_width(text_)
+                continue
             if bar and l.startswith(" ▎"):  # a comment: the bar and the name wear the author's color, the text stays plain
                 self.scr.addnstr(y_, 0, " ▎", 2, self.paint(bar))
                 self.scr.addnstr(y_, 2, l[2:], w - 3, attr)
@@ -2386,7 +2483,7 @@ class App:
         elif not self.pick_and_save(confirm=False):
             return
         self.load_config()
-        self.all, self.pages, self.cache, self.detail = [], [], {}, None
+        self.all, self.pages, self.cache, self.detail, self.rich = [], [], {}, None, {}
         self.refresh_async("Loading %s…" % self.database_title(cfgmod.config_path()))
 
     # ------------------------------------------------------------ delegation tracking
@@ -2833,7 +2930,7 @@ class App:
             return
         self.busy("Signing out…")
         oauth.logout()
-        self.all, self.pages, self.cache, self.detail = [], [], {}, None
+        self.all, self.pages, self.cache, self.detail, self.rich = [], [], {}, None, {}
         self.has_more, self.cursor, self.job = False, None, None
         self.client = mb.McpClient(self.cfg["data_source_id"]) if self.cfg else self.client
         self.client.want = set(self.cfg["columns"]) if self.cfg else set()

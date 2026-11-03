@@ -430,6 +430,19 @@ class McpClient:
         m = re.search(r"<content>\n?(.*?)\n?</content>", text, re.S)
         return markdown_lines(m.group(1) if m else "")
 
+    def body_rich(self, page_id):
+        """The body as lines with style toggles (see markdown_rich); page mentions are named by their titles (up to 12 lookups)."""
+        text = self._fetch_page(page_id)
+        m = re.search(r"<content>\n?(.*?)\n?</content>", text, re.S)
+        md = m.group(1) if m else ""
+        urls = []
+        for u in re.findall(r'<mention url="(https?://[^"]+)"', md):
+            u = u.split("?")[0]
+            if u not in urls:
+                urls.append(u)
+        self.resolve_titles(urls[:12])
+        return markdown_rich(md, self._titles)
+
     def set_property(self, page_id, prop, value):
         """Write one property value (an option name, text, a number, '__YES__'/'__NO__' for a checkbox, or None to clear)."""
         self.call("notion-update-page", {"page_id": page_id, "command": "update_properties", "properties": {prop: value}})
@@ -474,6 +487,8 @@ class McpClient:
         body = re.sub(r"<mention[^>]*/>|<mention[^>]*>.*?</mention>", "(link)", body, flags=re.S)
         body = re.sub(r"<br\s*/?>", "\n", body)
         body = re.sub(r"</?(b|i|u|s|code|strong|em|span|del|ins)(\s[^>]*)?>", "", body)
+        body = re.sub(r"\[([^\]]+)\]\([^)\s]*\)", r"\1", body)  # [text](url) reads as its text
+        body = re.sub(r"slackMessage://\S+", "(Slack message)", body)
         body = re.sub(r"<[^>]+>", "", body)
         lines = [unescape(html.unescape(l)).rstrip() for l in body.split("\n")]
         out = []
@@ -496,6 +511,64 @@ class McpClient:
         if not m:
             raise nt.NotionError("the page was created but Notion did not say where")
         return self.get_page(m.group(0).split("?")[0])
+
+
+def markdown_rich(md, titles=None):
+    """Like markdown_lines, but keeps what makes the text readable: bold, code, italic and links become toggles (notion.BOLD
+    and friends), a page mention reads as its title, and a callout's lines start with notion.CALLOUT (its icon first)."""
+    titles = titles or {}
+    md = re.sub(r"<br\s*/?>", "\n", md)
+
+    def mention(m):
+        title = titles.get(m.group(1).split("?")[0], "")
+        return nt.LINK + "↗ " + title + nt.LINK if title else "(link)"
+    md = re.sub(r'<mention url="(https?://[^"]+)"[^>]*?(?:/>|>.*?</mention>)', mention, md, flags=re.S)
+    md = re.sub(r"<mention[^>]*/>|<mention[^>]*>.*?</mention>", "(link)", md, flags=re.S)
+    md = re.sub(r"</?(b|strong)>", nt.BOLD, md)
+    md = re.sub(r"</?(i|em)>", nt.ITALIC, md)
+    md = re.sub(r"</?code>", nt.CODE, md)
+    md = re.sub(r'<callout([^>]*)>', lambda m: "\n\x06" + ((re.search(r'icon="([^"]*)"', m.group(1)) or [0, ""])[1]), md)
+    md = md.replace("</callout>", "\n\x07\n")
+    md = re.sub(r"</?(u|s|span|details|summary|columns?|toggle|table|tr|td|th|colgroup|col)[^>]*>", "", md)
+    out, fence, in_call, icon = [], False, False, ""
+    for raw in md.split("\n"):
+        l = raw.rstrip()
+        if l.startswith("\x06"):
+            in_call, icon = True, l[1:]
+            continue
+        if l.startswith("\x07"):
+            in_call = False
+            out.append("")
+            continue
+        if l.lstrip().startswith("```"):
+            fence = not fence
+        elif not fence:
+            l = re.sub(r"!\[([^\]]*)\]\([^)]*\)", lambda m: "▣ " + (m.group(1) or "image"), l)
+            l = re.sub(r"\[([^\]]*)\]\(([^)]*)\)", lambda m: nt.LINK + (m.group(1) or m.group(2)) + nt.LINK, l)
+            l = re.sub(r"\*\*(.+?)\*\*", lambda m: nt.BOLD + m.group(1) + nt.BOLD, l)
+            l = re.sub(r"(?<!`)`([^`]+)`(?!`)", lambda m: nt.CODE + m.group(1) + nt.CODE, l)
+        l = unescape(l)
+        if in_call and not l.strip():
+            continue
+        if in_call:
+            l = nt.CALLOUT + ((icon + " ") if icon else "") + l
+            icon = ""
+        out.append(l)
+    # a toggle left open at the end of a line is closed there and reopened on the next, so every line stands alone
+    state, fixed = set(), []
+    for l in out:
+        pre = "".join(sorted(state))
+        for ch in l:
+            if ch in (nt.BOLD, nt.CODE, nt.LINK, nt.ITALIC):
+                state ^= {ch}
+        fixed.append((l[:1] + pre + l[1:] if l.startswith(nt.CALLOUT) else pre + l) + "".join(sorted(state)))
+    while fixed and not nt.plain(fixed[0]).strip():
+        fixed.pop(0)
+    res = []
+    for l in fixed:
+        if nt.plain(l).strip() or (res and nt.plain(res[-1]).strip()):
+            res.append(l)
+    return res
 
 
 def markdown_lines(md):

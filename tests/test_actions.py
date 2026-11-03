@@ -222,6 +222,13 @@ class RealShapeAuthors(unittest.TestCase):
         self.assertEqual(got[1]["author"], "Linus Torvalds")
 
 
+class CommentLinks(unittest.TestCase):
+    def test_links_read_as_their_text_and_slack_urls_are_named(self):
+        c = mb.McpClient("ds", object())
+        got = c.plain_comment("See [the thread](slackMessage://a.slack.com/C1/1/1) and slackMessage://a.slack.com/C2/2/2 or [docs](https://e.com/x).")
+        self.assertEqual(got, "See the thread and (Slack message) or docs.")
+
+
 class MentionedPages(unittest.TestCase):
     def test_a_page_mention_reads_as_the_pages_title(self):
         class Fake:
