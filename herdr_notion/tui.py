@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from . import branch as br
 from . import config as cfgmod
 from . import delegate as dg
+from . import drafts as dr
 from . import mcpbackend as mb
 from . import oauth
 from . import palette as pl
@@ -28,7 +29,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "remove the newest filter pill, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new ticket: a box with the fields you set (the tab you are on fills in what it keeps); Tab moves, ⇧Tab then ⏎ creates, ^N creates another"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("Y", "next theme: default, light, high-contrast, mono (kept in the config)"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("X", "close the pane of this ticket's finished agent (asks first)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("i", "in a page: every property in a box (o opens, y copies the link)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("N", "review the ticket drafts agents handed over (herdr-notion draft)"), ("n", "new ticket: a box with the fields you set (the tab you are on fills in what it keeps); Tab moves, ⇧Tab then ⏎ creates, ^N creates another"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("Y", "next theme: default, light, high-contrast, mono (kept in the config)"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("X", "close the pane of this ticket's finished agent (asks first)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("i", "in a page: every property in a box (o opens, y copies the link)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -65,6 +66,7 @@ class App:
         self.delegations = self.load_delegations()  # page id -> {"pane", "agent", "title", "seen_working", "done"}
         self.finished = []  # page ids whose agent just went idle: the main loop offers to move them to review
         self.next_agent_poll = 0
+        self.draft_count, self.next_draft_poll = len(dr.list_drafts(dr.drafts_dir())), 0
         self.found = {}  # page id -> agent matched from herdr's titles (not delegated from here)
         self.herdr_ok = True  # false once herdr cannot be reached: the quiet matching stops asking
         self.fidx = 0
@@ -1453,7 +1455,8 @@ class App:
         self.footer([("→", "open group"), ("←", "fold group"), ("⏎", "toggle"), ("g", "ungroup"), ("Tab", "next tab"), ("?", "more")] if self.hdr else
                     [("↑↓/PgUp PgDn", "scroll"), ("←", "back to the list"), ("⏎", "open")] if self.focus == "preview" else
                     [("⏎", "open"), ("s", "status"), ("d", "delegate"), ("Tab", "next tab"), ("/", "search")]
-                    + ([("→", "preview")] if wide else []) + [("e", "edit"), ("z", "compact"), ("n", "new"), ("?", "more")])
+                    + ([("→", "preview")] if wide else []) + [("e", "edit"), ("z", "compact"), ("n", "new")]
+                    + ([("N", "%d draft%s" % (self.draft_count, "" if self.draft_count == 1 else "s"))] if self.draft_count else []) + [("?", "more")])
 
     # ------------------------------------------------------------ agents view
     def agent_rows(self):
@@ -2447,7 +2450,13 @@ class App:
         n = len(fields)
         h, _ = self.scr.getmaxyx()
         air = h >= 26
-        lines = [("", "")] if air else []
+        lines = []
+        if form.get("from") is not None:
+            who = form["from"] or "an agent"
+            lines.append(("grey", "%s, %s" % (who, nt.short_stamp(form.get("at", "")))))
+            lines += [("amber", "▎ " + l) for l in textwrap.wrap(form["note"], 58)] if form.get("note") else []
+        if air or lines:
+            lines.append(("", ""))
         shown = {"status": "(Notion's default)", "select": "(none)"}
         for i, f in enumerate(fields):
             on = i == sel
@@ -2456,7 +2465,7 @@ class App:
             if not text:
                 text = shown.get(f["kind"], "—")
             hint = {"tab": "   from the %s tab" % form["tab"], "agent": "   agent"}.get(f["src"], "")
-            lines.append(("accent" if on else "", "%s%s%s%s" % ("▸ " if on else "  ", f["name"][:11].ljust(12), text, hint)))
+            lines.append(("red" if f.get("bad") else "accent" if on else "", "%s%s%s%s" % ("▸ " if on else "  ", f["name"][:11].ljust(12), text, "   not an option here" if f.get("bad") else hint)))
             if i == 0 and air:
                 lines.append(("", ""))
         lines.append(("", ""))
@@ -2471,7 +2480,8 @@ class App:
         on = sel == n + 1
         lines.append(("accent" if on else "", "%s[ Create ⏎ ]" % ("▸ " if on else "  ")))
         self.background()
-        self.modal(title, lines, "Tab next · ⇧Tab back · ⏎ pick · ^N create another · Esc cancel", width=66)
+        self.modal(title, lines, "Tab next · ⇧Tab back · ⏎ pick · ^D discard · Esc keep for later" if form.get("draft") else
+                   "Tab next · ⇧Tab back · ⏎ pick · ^N create another · Esc cancel", width=66)
         self.scr.refresh()
 
     def form_pick(self, f):
@@ -2515,6 +2525,10 @@ class App:
             self.toast("give it a title first", "info", 3)
             return None
         for i, f in enumerate(fields[1:], 1):
+            if f.get("bad"):
+                form["sel"] = i
+                self.toast("%s: '%s' is not one of its options; pick one" % (f["name"], f["text"]), "err")
+                return None
             if f["kind"] in nf.TYPED:
                 raw, err = nf.parse_value(f["kind"], f["text"])
                 if err:
@@ -2534,10 +2548,13 @@ class App:
         """n: a box in the middle with the fields you set when you make a ticket. The tab you are on fills in what it keeps (yours,
         a status). Tab and ⇧Tab move, ⏎ picks or goes on, ⏎ on [ Create ] writes it; ^N writes it and opens a fresh form."""
         schema = self.client.discover()
-        form = self.new_form(schema)
-        n = len(form["fields"])
+        self.run_form(self.new_form(schema), schema)
+
+    def run_form(self, form, schema):
+        """The key loop of the box, for a fresh ticket or for a draft an agent made (form["draft"] is its file)."""
         while True:
-            self.draw_form(form)
+            n = len(form["fields"])
+            self.draw_form(form, "Draft" if form.get("draft") else "New ticket")
             k = self.scr.get_wch()
             sel = form["sel"]
             f = form["fields"][sel] if sel < n else None
@@ -2546,8 +2563,13 @@ class App:
                 if k == curses.KEY_MOUSE:
                     self.read_mouse()
                 continue
+            if k == "\x04" and form.get("draft"):
+                dr.remove_draft(form["draft"])
+                self.draft_count = len(dr.list_drafts(dr.drafts_dir()))
+                self.toast("draft discarded", "info", 3)
+                return
             if k == "\x1b":
-                if any(x["text"] for x in form["fields"][:1]) or form["body"]:
+                if not form.get("draft") and (form["fields"][0]["text"] or form["body"]):
                     if not self.confirm("Throw away this ticket?", yes="Discard"):
                         continue
                 return
@@ -2561,6 +2583,10 @@ class App:
                 if page is None:
                     continue
                 self.ticket_created(page, form)
+                if form.get("draft"):
+                    dr.remove_draft(form["draft"])
+                    self.draft_count = len(dr.list_drafts(dr.drafts_dir()))
+                    return
                 if not again:
                     return
                 form["fields"][0].update(text="", raw=None)
@@ -2569,7 +2595,8 @@ class App:
                 if f is None:  # the description takes new lines
                     form["body"] += "\n"
                 elif f["kind"] in nf.PICK:
-                    self.form_pick(f)
+                    if self.form_pick(f):
+                        f["bad"] = False
                 else:
                     form["sel"] = sel + 1
             elif k in ("\x7f", "\b") or k == curses.KEY_BACKSPACE:
@@ -2584,6 +2611,76 @@ class App:
                     f["text"] += k
                 elif f is not None and k == " ":
                     self.form_pick(f)
+
+    def apply_draft(self, form, draft, schema):
+        """Fill the form from a draft. Values are checked against the database: an option that does not exist, or a name that
+        matches no page, shows in red and the form will not create until it is picked again."""
+        props = schema["properties"]
+        by_fold = {n.lower(): n for n in props}
+        fields = form["fields"]
+        fields[0].update(text=str(draft["title"]).strip(), src="agent")
+        ignored = []
+        for key, val in (draft.get("set") or {}).items():
+            name = by_fold.get(str(key).lower())
+            kind = props[name]["type"] if name else ""
+            if not name or kind not in nf.SUPPORTED or kind == "title":
+                ignored.append(str(key))
+                continue
+            f = next((x for x in fields if x["name"] == name), None)
+            if f is None:
+                f = nf.field(name, kind)
+                fields.append(f)
+            f.update(src="agent", bad=False, raw=None, text=str(val))
+            if kind in ("status", "select"):
+                hit = nf.match_option([o["name"] for o in props[name][kind].get("options", [])], val)
+                if hit:
+                    f.update(text=hit, raw=hit)
+                else:
+                    f["bad"] = True
+            elif kind == "relation":
+                try:
+                    hit = nf.match_relation(self.client.relation_options(name, str(val)), val)
+                except (nt.NotionError, oauth.OAuthError):
+                    hit = None
+                if hit:
+                    f.update(text=hit["title"], raw=[hit["url"]])
+                else:
+                    f["bad"] = True
+        form.update(body=str(draft.get("body") or ""), sel=0, draft=draft["_path"], **{"from": draft.get("from", ""), "at": draft.get("at", "")})
+        form["note"] = " ".join(x for x in (str(draft.get("note") or "").strip(), ("Ignored: %s." % ", ".join(ignored)) if ignored else "") if x)
+
+    def review_draft(self, path, draft):
+        schema = self.client.discover()
+        self.note("Checking the draft…")
+        form = self.new_form(schema)
+        self.apply_draft(form, dict(draft, _path=path), schema)
+        self.msg = ""
+        self.run_form(form, schema)
+
+    def open_drafts(self):
+        """N: review the drafts agents have handed over (one: it opens; several: pick)."""
+        found = dr.list_drafts(dr.drafts_dir())
+        self.draft_count = len(found)
+        if not found:
+            self.toast("no drafts waiting", "info", 3)
+            return
+        i = 0
+        if len(found) > 1:
+            i = self.popup("Drafts", ["%s  ·  %s  ·  %s" % (nt.clip(d["title"], 40), d.get("from") or "agent", nt.short_stamp(d.get("at", ""))) for _, d in found])
+            if i is None:
+                return
+        self.review_draft(*found[i])
+
+    def poll_drafts(self):
+        """Every couple of seconds look for drafts agents left; a new one gets a message in the middle."""
+        if time.time() < self.next_draft_poll:
+            return
+        self.next_draft_poll = time.time() + 2
+        found = dr.list_drafts(dr.drafts_dir())
+        if len(found) > self.draft_count and not self.detail:
+            d = found[-1][1]
+            self.toast("%s drafted “%s”: N reviews it" % (d.get("from") or "an agent", nt.clip(d["title"], 40)), "info", 8)
+        self.draft_count = len(found)
 
     def ticket_created(self, page, form):
         """The new ticket joins the list without touching your sort or grouping. A tab that would not list it (it is not yours,
@@ -4023,6 +4120,7 @@ class App:
             self.maybe_preview()
             self.auto_refresh()
             self.poll_agents()
+            self.poll_drafts()
             self.poll_agent_preview()
             if self.finished:
                 self.redraw()
@@ -4206,6 +4304,8 @@ class App:
             self.msg = "compact: the colored bar shows the status" if self.compact else "table: status word on every row"
         elif k == ord("n"):
             self.guard(self.new_page)
+        elif k == ord("N"):
+            self.guard(self.open_drafts)
         elif k == ord("D"):
             self.guard(self.switch_database)
         elif k == ord("O"):

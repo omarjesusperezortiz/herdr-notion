@@ -129,3 +129,18 @@ def parse_value(kind, text):
             return text, ""
         return None, "a date is written 2026-11-08"
     return text, ""
+
+
+def match_option(options, value):
+    """The option named like `value` (ignoring case and surrounding space), else None."""
+    want = str(value).strip().lower()
+    return next((o for o in options if o.lower() == want), None)
+
+
+def match_relation(found, value):
+    """The page, out of the search results `found` ([{title, url}]), that `value` names: the exact title, else the only result."""
+    want = str(value).strip().lower()
+    for o in found:
+        if o["title"].strip().lower() == want:
+            return o
+    return found[0] if len(found) == 1 else None

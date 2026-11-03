@@ -7,6 +7,11 @@ elif sys.argv[1:2] == ["digest"]:
 
     def main():
         sys.exit(digest_main(sys.argv[2:]))
+elif sys.argv[1:2] == ["draft"]:
+    from .drafts import main as draft_main
+
+    def main():
+        sys.exit(draft_main(sys.argv[2:]))
 else:
     from .tui import main
 
