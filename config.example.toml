@@ -12,6 +12,7 @@
 data_source_id = "00000000-0000-0000-0000-000000000000"
 status_property = "Status"
 columns = ["Status", "Priority", "Assignee"]
+# new_fields = ["Status", "Assignee", "Project", "Type", "Priority", "Sprints"]   # the fields of the new-ticket box (n); the title is always first
 # summary = ["Assignee", "Sprint", "Priority", "Due", "Project", "Type"]   # the one line under a page title; i shows them all
 
 # Optional. Name of the title property when it is not detected.

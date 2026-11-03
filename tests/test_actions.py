@@ -102,29 +102,6 @@ class Comments(unittest.TestCase):
         self.assertEqual(got[0]["author"], "Ada")
 
 
-class Creating(unittest.TestCase):
-    def test_a_new_page_goes_to_the_top_after_confirming(self):
-        app, _ = make_app([dict(p) for p in PAGES])
-        app.ask = lambda label, initial="": "Write the release notes"
-        app.popup = lambda title, items, start=0: 1  # the first real status
-        app.confirm = lambda text: True
-        app.new_page()
-        self.assertEqual(app.client.writes[-1][0:2], ("create", "Write the release notes"))
-        self.assertEqual(nt.page_title(app.pages[0]), "Write the release notes")
-        self.assertEqual(app.sel, 0)
-
-    def test_nothing_is_created_without_a_title_or_a_confirm(self):
-        app, _ = make_app([dict(p) for p in PAGES])
-        app.ask = lambda label, initial="": ""
-        app.new_page()
-        self.assertEqual(app.client.writes, [])
-        app.ask = lambda label, initial="": "Something"
-        app.popup = lambda title, items, start=0: 0
-        app.confirm = lambda text: False
-        app.new_page()
-        self.assertEqual(app.client.writes, [])
-
-
 class Databases(unittest.TestCase):
     def test_switching_keeps_each_databases_own_config(self):
         cfg_dir = tempfile.mkdtemp()

@@ -500,17 +500,31 @@ class McpClient:
     def add_comment(self, page_id, text):
         self.call("notion-create-comment", {"page_id": page_id, "markdown": text})
 
-    def create_page(self, title_prop, title, props=None):
-        """Create a page in this database and return it (shaped like a row)."""
+    def create_page(self, title_prop, title, props=None, body=""):
+        """Create a page in this database and return it (shaped like a row). `props` are values for Notion's create call
+        (see newticket.property_values); `body` becomes the page's text."""
         values = dict(props or {})
         values[title_prop] = title
+        page = {"properties": values}
+        if body:
+            page["content"] = body
         res = self.call("notion-create-pages", {"parent": {"type": "data_source_id", "data_source_id": self.data_source_id},
-                                                "pages": [{"properties": values}]})
+                                                "pages": [page]})
         blob = json.dumps(res) if not isinstance(res, str) else res
         m = re.search(r"https://[^\s\"\\]*notion[^\s\"\\]*", blob)
         if not m:
             raise nt.NotionError("the page was created but Notion did not say where")
         return self.get_page(m.group(0).split("?")[0])
+
+    def relation_options(self, prop, query="", limit=30):
+        """[{title, url}] for the pages a relation property can point to, matching `query` (all of them, newest first, when empty)."""
+        target = (self.discover()["properties"].get(prop, {}).get("relation") or {}).get("data_source", "")
+        if not target:
+            return []
+        res = self.call("notion-search", {"query": query.strip() or " ", "data_source_url": "collection://" + target,
+                                          "page_size": limit, "max_highlight_length": 0})
+        return [{"title": r.get("title") or "(untitled)", "url": r.get("url", "").split("?")[0]}
+                for r in (res.get("results", []) if isinstance(res, dict) else []) if r.get("type") == "page"]
 
 
 def markdown_rich(md, titles=None):

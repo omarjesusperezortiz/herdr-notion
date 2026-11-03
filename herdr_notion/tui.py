@@ -19,6 +19,7 @@ from . import delegate as dg
 from . import mcpbackend as mb
 from . import oauth
 from . import palette as pl
+from . import newticket as nf
 from . import notion as nt
 from . import setup as st
 from . import tomlcompat
@@ -27,7 +28,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "remove the newest filter pill, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("Y", "next theme: default, light, high-contrast, mono (kept in the config)"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("X", "close the pane of this ticket's finished agent (asks first)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("i", "in a page: every property in a box (o opens, y copies the link)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new ticket: a box with the fields you set (the tab you are on fills in what it keeps); Tab moves, ⇧Tab then ⏎ creates, ^N creates another"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("Y", "next theme: default, light, high-contrast, mono (kept in the config)"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("X", "close the pane of this ticket's finished agent (asks first)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("i", "in a page: every property in a box (o opens, y copies the link)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -2416,33 +2417,188 @@ class App:
         self.detail["comments"] = self.client.comments(pid)
         self.msg = "comment posted"
 
-    def new_page(self):
-        """n: create a page in this database (a title and, if you like, a status)."""
+    # ------------------------------------------------------------ new ticket
+    def new_form(self, schema):
+        """The form's state: its fields (those of the config's `new_fields`, else the usual ones), the values the tab you are on
+        already decides, and the description."""
+        fields = nf.default_fields(schema, self.cfg["status_property"], self.cfg.get("new_fields"))
+        flt = self.cfg["filters"][self.fidx].get("filter") if self.cfg["filters"] else None
+        fills = nf.tab_fills(flt, fields)
+        urls = {u for v in fills.values() if isinstance(v["raw"], list) for u in v["raw"]}
+        try:
+            self.client.resolve_titles(urls)
+        except (nt.NotionError, oauth.OAuthError):
+            pass
+        titles = getattr(self.client, "_titles", {})
+        for f in fields:
+            v = fills.get(f["name"])
+            if v:
+                f.update(v)
+                if isinstance(v["raw"], list):
+                    f["text"] = titles.get(v["raw"][0]) or "this tab's page"
+        return {"fields": fields, "body": "", "sel": 0, "tab": self.cfg["filters"][self.fidx]["name"] if self.cfg["filters"] else ""}
+
+    def form_rows(self, form):
+        """Everything the cursor can stop on, in order: each field, the description, the Create button."""
+        return len(form["fields"]) + 2
+
+    def draw_form(self, form, title="New ticket"):
+        fields, sel = form["fields"], form["sel"]
+        n = len(fields)
+        h, _ = self.scr.getmaxyx()
+        air = h >= 26
+        lines = [("", "")] if air else []
+        shown = {"status": "(Notion's default)", "select": "(none)"}
+        for i, f in enumerate(fields):
+            on = i == sel
+            typed = f["kind"] in nf.TYPED
+            text = f["text"] + ("▏" if on and typed else "")
+            if not text:
+                text = shown.get(f["kind"], "—")
+            hint = {"tab": "   from the %s tab" % form["tab"], "agent": "   agent"}.get(f["src"], "")
+            lines.append(("accent" if on else "", "%s%s%s%s" % ("▸ " if on else "  ", f["name"][:11].ljust(12), text, hint)))
+            if i == 0 and air:
+                lines.append(("", ""))
+        lines.append(("", ""))
+        on = sel == n
+        lines.append(("accent" if on else "", "%sDescription%s" % ("▸ " if on else "  ", "  (optional; ⏎ for a new line)" if on else "")))
+        body = form["body"].split("\n") if form["body"] else []
+        for j, l in enumerate(body[-3:]):
+            lines.append(("", "    " + l + ("▏" if on and j == len(body[-3:]) - 1 else "")))
+        if on and not body:
+            lines.append(("", "    ▏"))
+        lines.append(("", ""))
+        on = sel == n + 1
+        lines.append(("accent" if on else "", "%s[ Create ⏎ ]" % ("▸ " if on else "  ")))
+        self.background()
+        self.modal(title, lines, "Tab next · ⇧Tab back · ⏎ pick · ^N create another · Esc cancel", width=66)
+        self.scr.refresh()
+
+    def form_pick(self, f):
+        """Choose the value of a status, select or relation field. True when it changed."""
         schema = self.client.discover()
-        title = self.ask("new page title: ")
-        if not title or not title.strip():
-            return
-        props, shown = {}, ""
-        prop = self.cfg["status_property"]
-        if prop in schema["properties"] and schema["properties"][prop]["type"] in ("status", "select"):
-            kind, opts = nt.status_options(schema, prop)
-            j = self.popup("Status of the new page", ["(Notion's default)"] + opts)
+        if f["kind"] in ("status", "select"):
+            kind = f["kind"]
+            opts = [o["name"] for o in schema["properties"][f["name"]][kind].get("options", [])]
+            j = self.popup(f["name"], ["(none)"] + opts, opts.index(f["raw"]) + 1 if f["raw"] in opts else 0)
             if j is None:
+                return False
+            f["text"], f["raw"], f["src"] = ("", None, "") if j == 0 else (opts[j - 1], opts[j - 1], "")
+            return True
+        query = ""
+        while True:
+            self.note("Looking up %s…" % f["name"])
+            found = self.client.relation_options(f["name"], query)
+            head = ["(none)", "⌕ search…" if not query else "⌕ search again…  (now: %s)" % query]
+            j = self.popup(f["name"], head + [o["title"] for o in found])
+            if j is None:
+                return False
+            if j == 0:
+                f["text"], f["raw"], f["src"] = "", None, ""
+                return True
+            if j == 1:
+                q = self.type_text(f["name"], [("grey", "Part of the name")], "search: ", query)
+                if q is None:
+                    return False
+                query = q
+                continue
+            o = found[j - 2]
+            f["text"], f["raw"], f["src"] = o["title"], [o["url"]], ""
+            return True
+
+    def create_from_form(self, form, schema):
+        """Write the ticket. Returns the page, or None when something needs fixing (the form stays open with its values)."""
+        fields = form["fields"]
+        title = fields[0]["text"].strip()
+        if not title:
+            form["sel"] = 0
+            self.toast("give it a title first", "info", 3)
+            return None
+        for i, f in enumerate(fields[1:], 1):
+            if f["kind"] in nf.TYPED:
+                raw, err = nf.parse_value(f["kind"], f["text"])
+                if err:
+                    form["sel"] = i
+                    self.toast("%s: %s" % (f["name"], err), "err")
+                    return None
+                f["raw"] = raw
+        props, body = nf.property_values(fields[1:], schema, form["body"])
+        self.note("Creating…")
+        try:
+            return self.client.create_page(fields[0]["name"], title, props, body)
+        except (nt.NotionError, oauth.OAuthError) as e:
+            self.toast("not created: %s (your form is still open)" % e, "err")
+            return None
+
+    def new_page(self):
+        """n: a box in the middle with the fields you set when you make a ticket. The tab you are on fills in what it keeps (yours,
+        a status). Tab and ⇧Tab move, ⏎ picks or goes on, ⏎ on [ Create ] writes it; ^N writes it and opens a fresh form."""
+        schema = self.client.discover()
+        form = self.new_form(schema)
+        n = len(form["fields"])
+        while True:
+            self.draw_form(form)
+            k = self.scr.get_wch()
+            sel = form["sel"]
+            f = form["fields"][sel] if sel < n else None
+            again = False
+            if k in (curses.KEY_RESIZE, curses.KEY_MOUSE):
+                if k == curses.KEY_MOUSE:
+                    self.read_mouse()
+                continue
+            if k == "\x1b":
+                if any(x["text"] for x in form["fields"][:1]) or form["body"]:
+                    if not self.confirm("Throw away this ticket?", yes="Discard"):
+                        continue
                 return
-            if j:
-                props[prop], shown = opts[j - 1], " · %s" % opts[j - 1]
-        if not self.confirm("Create '%s'%s?" % (nt.clip(title.strip(), 40), shown)):
-            self.msg = "cancelled"
+            if k in ("\t", curses.KEY_DOWN):
+                form["sel"] = (sel + 1) % self.form_rows(form)
+            elif k in (curses.KEY_BTAB, curses.KEY_UP):
+                form["sel"] = (sel - 1) % self.form_rows(form)
+            elif k == "\x0e" or (k in ("\n", "\r") and sel == n + 1):
+                again = k == "\x0e"
+                page = self.create_from_form(form, schema)
+                if page is None:
+                    continue
+                self.ticket_created(page, form)
+                if not again:
+                    return
+                form["fields"][0].update(text="", raw=None)
+                form["body"], form["sel"] = "", 0
+            elif k in ("\n", "\r"):
+                if f is None:  # the description takes new lines
+                    form["body"] += "\n"
+                elif f["kind"] in nf.PICK:
+                    self.form_pick(f)
+                else:
+                    form["sel"] = sel + 1
+            elif k in ("\x7f", "\b") or k == curses.KEY_BACKSPACE:
+                if f is None and sel == n:
+                    form["body"] = form["body"][:-1]
+                elif f is not None and f["kind"] in nf.TYPED:
+                    f["text"] = f["text"][:-1]
+            elif isinstance(k, str) and k.isprintable():
+                if sel == n:
+                    form["body"] += k
+                elif f is not None and f["kind"] in nf.TYPED:
+                    f["text"] += k
+                elif f is not None and k == " ":
+                    self.form_pick(f)
+
+    def ticket_created(self, page, form):
+        """The new ticket joins the list without touching your sort or grouping. A tab that would not list it (it is not yours,
+        or the status is excluded) says so in the message instead of showing a different row as if it were the new one."""
+        flt = self.cfg["filters"][self.fidx].get("filter") if self.cfg["filters"] else None
+        title = nt.page_title(page)
+        tid = nt.page_ticket_id(page)
+        label = ("%s " % tid if tid else "") + nt.clip(title, 40)
+        if flt and not nf.still_listed(flt, form["fields"]):
+            self.toast("created %s. This tab (%s) does not list it; Tab goes to one that does" % (label, form["tab"]), "info", 6)
             return
-        self.busy("Creating…")
-        if not self.title_prop:
-            self.title_prop = nt.title_property_name(schema.get("properties", {}))
-        page = self.client.create_page(self.title_prop, title.strip(), props)
         self.all.insert(0, page)
-        self.sort_mode, self.group = 0, False
-        self.refilter()
-        self.sel = 0
-        self.msg = "created '%s'" % nt.clip(title.strip(), 40)
+        self.apply_sort()
+        self.sel = next((i for i, p in enumerate(self.pages) if p["id"] == page["id"]), self.sel)
+        self.toast("created %s" % label)
 
     def database_files(self):
         d = os.path.join(os.path.dirname(cfgmod.config_path()), "databases")

@@ -90,6 +90,8 @@ class FakeClient:
         self.queries = []
 
     def discover(self): return SCHEMA
+    def relation_options(self, prop, query="", limit=30): return [{"title": "Checkout", "url": "https://x/proj"}, {"title": "Onboarding", "url": "https://x/onb"}]
+    def resolve_titles(self, urls): pass
     def whoami(self): return {"workspace": "Demo", "user": "Ada"}
     def body_lines(self, pid): return list(self.body)
     def get_page(self, pid): return next(p for p in self.pages if p["id"] == pid)
@@ -117,8 +119,8 @@ class FakeClient:
         self.writes.append(("comment", pid, text))
         self.comment_list = list(getattr(self, "comment_list", [])) + [{"id": "c9", "author": "Ada", "when": "2026-10-30T12:00:00Z", "text": text}]
 
-    def create_page(self, title_prop, title, props=None):
-        self.writes.append(("create", title, dict(props or {})))
+    def create_page(self, title_prop, title, props=None, body=""):
+        self.writes.append(("create", title, dict(props or {}), body))
         new = page(len(self.pages), title, (props or {}).get("Status", "To do"))
         self.pages.append(new)
         return new
