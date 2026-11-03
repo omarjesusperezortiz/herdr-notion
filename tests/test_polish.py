@@ -898,7 +898,8 @@ class PageSections(unittest.TestCase):
         app.detail_key(9)
         self.assertEqual(app.dtab, 1)
         app.draw_detail()
-        self.assertTrue(scr.has("Ana · "))
+        self.assertTrue(scr.has("▎Ana"))
+        self.assertTrue(scr.has(" ago"))
         self.assertTrue(scr.has("Reproduced it."))
         self.assertFalse(scr.has("Users land on /home"))
         app.detail_key(curses.KEY_BTAB)
@@ -990,6 +991,21 @@ class PageSections(unittest.TestCase):
         self.assertFalse(app.show_props)
         app.draw_detail()
         self.assertFalse(scr.has("Properties"))
+
+    def test_comments_have_a_bar_a_stamp_and_a_reply_hint_and_related_is_grouped(self):
+        app, scr, a, b = self.page_app()
+        app.dtab = 1
+        app.draw_detail()
+        self.assertTrue(scr.has("▎Ana"))
+        self.assertTrue(scr.has("▎ Reproduced it."))
+        self.assertTrue(scr.has("c writes a reply"))
+        a["properties"]["Project"] = {"type": "relation", "relation": [{"id": "https://x/p/pr", "title": "Checkout"}]}
+        app.dtab = 2
+        app.draw_detail()
+        self.assertTrue(scr.has("RELATED"))
+        self.assertTrue(scr.has("PROJECT"))
+        self.assertTrue(scr.has("↗ Checkout"))
+        self.assertTrue(scr.has("Enter opens"))
 
     def test_a_click_on_a_section_label_switches_to_it(self):
         app, scr, _, _ = self.page_app()

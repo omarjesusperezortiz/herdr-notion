@@ -451,6 +451,7 @@ class McpClient:
         for _, body in raw:
             ids.update(uid("user://" + m) for m in re.findall(r'<mention url="user://([^"]+)"', body))
         self.resolve_users({i for i in ids if i})
+        self.resolve_titles({u.split("?")[0] for _, body in raw for u in re.findall(r'<mention url="(https?://[^"]+)"', body)})
         out = [{"id": a.get("id", ""), "author": self.author_name(a.get("user-url", "")), "when": a.get("datetime", ""),
                 "text": self.plain_comment(body)} for a, body in raw]
         return sorted(out, key=lambda c: c["when"])
@@ -466,6 +467,10 @@ class McpClient:
     def plain_comment(self, body):
         import html
         body = re.sub(r'<mention url="user://([^"]+)"\s*/?>(?:</mention>)?', lambda m: "@" + self.author_name("user://" + m.group(1)), body)
+        def page_mention(m):
+            title = self._titles.get(m.group(1).split("?")[0], "")
+            return "↗ " + title if title else "(link)"
+        body = re.sub(r'<mention url="(https?://[^"]+)"[^>]*?(?:/>|>.*?</mention>)', page_mention, body, flags=re.S)
         body = re.sub(r"<mention[^>]*/>|<mention[^>]*>.*?</mention>", "(link)", body, flags=re.S)
         body = re.sub(r"<br\s*/?>", "\n", body)
         body = re.sub(r"</?(b|i|u|s|code|strong|em|span|del|ins)(\s[^>]*)?>", "", body)

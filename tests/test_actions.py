@@ -222,6 +222,18 @@ class RealShapeAuthors(unittest.TestCase):
         self.assertEqual(got[1]["author"], "Linus Torvalds")
 
 
+class MentionedPages(unittest.TestCase):
+    def test_a_page_mention_reads_as_the_pages_title(self):
+        class Fake:
+            def call(self, name, args=None):
+                if name == "notion-fetch":
+                    return {"title": "Fix empty route", "text": ""}
+                return {"text": '<discussions><discussion id="d"><comment id="c" url="x" user-url="user://u1/a@b.co" datetime="2026-10-30T09:00:00.000Z">'
+                                'Same as <mention url="https://x/p/abc?pvs=4" /> (ET-1)</comment></discussion></discussions>'}
+        got = mb.McpClient("ds", Fake()).comments("https://x/p/1")
+        self.assertEqual(got[0]["text"], "Same as ↗ Fix empty route (ET-1)")
+
+
 class RelatedSection(unittest.TestCase):
     def test_opening_a_page_names_every_linked_page_and_hides_its_own_link(self):
         app, scr = make_app([dict(p) for p in PAGES], h=30, w=100)

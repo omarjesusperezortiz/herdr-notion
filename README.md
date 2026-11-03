@@ -139,7 +139,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `c` | Choose which properties the table shows and in what order (space ticks, `J` `K` move, `⏎` saves). Kept in `layout.json` next to your config |
 | `a` | In a wide pane, show the selected ticket's agent (its terminal, live, re-read every 2 s) in the preview instead of the ticket; `a` again goes back |
 | `A` | Agents view: every agent herdr lists with its state, how long it has been on its ticket and the ticket (delegated or attached from here, matched by ticket id, or the id written in its name). `⏎` jumps to its pane, `a` attaches it to a ticket, `r` asks herdr again, `A` or `Esc` goes back |
-| `Tab` / `1` `2` `3` (in a page) | Sections of the page view: Body, Comments (read like a conversation, `c` writes one) and Related (`j` `k` pick a linked page, `⏎` opens it, `←` comes back). Properties show as chips at the top and to-dos as a progress bar |
+| `Tab` / `1` `2` `3` (in a page) | Sections of the page view: Body, Comments (read like a conversation, `c` writes one) and Related (grouped by relation, with each page's status; `j` `k` pick one, `⏎` opens it, `←` comes back). The top of a page is one summary line (set it with `summary = ["Assignee", "Sprint", …]`) and the to-do bar; `i` opens every property in a box |
 | `X` | Close the pane of this ticket's finished agent (asks first; a working or blocked agent is left alone). Agents started from here get a tab named like `ET-2546 Fix login redirect` |
 | `u` | Undo the last status change (single, bulk, `>`, board move) for a minute. A toast says what happened: green for done, red for a failure (stays until a key) |
 | `p` | Show or hide the preview pane. Hidden, the table uses the whole width and `→` opens the page |

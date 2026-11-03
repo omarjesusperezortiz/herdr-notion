@@ -269,6 +269,18 @@ def relative_time(iso, now=None):
     return "now"
 
 
+def short_stamp(iso):
+    """'Oct 30, 09:00' (UTC) for an ISO-8601 timestamp; '' if unparsable."""
+    from datetime import datetime
+    try:
+        t = datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if t.tzinfo is not None:
+        t = t.astimezone()  # your own clock
+    return "%s %d, %02d:%02d" % (t.strftime("%b"), t.day, t.hour, t.minute)
+
+
 def checklist_progress(lines):
     """(done, total) of the to-do lines ([x] and [ ]) in a flattened body, or None when there are none."""
     marks = [l.lstrip()[:3] for l in lines if l.lstrip().startswith(("[x]", "[ ]"))]

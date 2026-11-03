@@ -27,7 +27,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "remove the newest filter pill, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("Y", "next theme: default, light, high-contrast, mono (kept in the config)"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("X", "close the pane of this ticket's finished agent (asks first)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("n", "new page in this database"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("Y", "next theme: default, light, high-contrast, mono (kept in the config)"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("X", "close the pane of this ticket's finished agent (asks first)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("i", "in a page: every property in a box (o opens, y copies the link)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -1786,6 +1786,7 @@ class App:
 
     DETAIL_TABS = ("Body", "Comments", "Related")
     BODY_WIDTH = 100
+    AUTHOR_COLORS = ("amber", "teal", "blue", "purple", "green", "orange")  # one per person in a thread
     SUMMARY = ("Assignee", "Sprint", "Priority", "Due", "Project", "Type")
 
     def summary_parts(self, page):
@@ -1824,6 +1825,14 @@ class App:
         me = key(page.get("id", "")) or key(page.get("url", ""))
         return [r for r in nt.page_relations(page) if not me or key(r[1]) != me]
 
+    def status_of_id(self, pid):
+        """(mark, text, attr) of a linked page's status when that page is in the loaded list, else None."""
+        key = (pid or "").split("?")[0].rstrip("/").split("/")[-1].replace("-", "")
+        for pg in self.all:
+            if key and (pg.get("id", "").split("?")[0].rstrip("/").split("/")[-1].replace("-", "") == key):
+                return self.status_cell(pg)
+        return None
+
     def detail_lines(self, w):
         """[(text, attr)] of the section being read: the body, the comments as a conversation, or the linked pages."""
         d = self.detail
@@ -1847,20 +1856,39 @@ class App:
                 lines.append((" Loading the comments…", curses.A_DIM))
             elif not comments:
                 lines.append((" No comments yet · c writes one", curses.A_DIM))
+            order = []
             for c_ in comments or []:
+                if c_["author"] not in order:
+                    order.append(c_["author"])
+                bar_key = self.AUTHOR_COLORS[order.index(c_["author"]) % len(self.AUTHOR_COLORS)]
                 ago = nt.relative_time(c_["when"])
-                when = "" if not ago else " · just now" if ago == "now" else " · %s ago" % ago
-                lines.append((" %s%s" % (c_["author"], when), curses.A_BOLD | self.paint("amber")))
+                stamp = nt.short_stamp(c_["when"])
+                when = (" just now" if ago == "now" else " %s ago" % ago if ago else "") + (" · " + stamp if stamp else "")
+                lines.append((" ▎%s" % c_["author"], curses.A_BOLD | self.paint(bar_key), when, bar_key))
                 for para in (c_["text"].split("\n") or [""]):
-                    for piece in (textwrap.wrap(para, max(w - 5, 10)) or [""]):
-                        lines.append(("   " + piece, 0))
+                    for piece in (textwrap.wrap(para, max(min(w - 6, self.BODY_WIDTH), 10)) or [""]):
+                        lines.append((" ▎ " + piece, 0, "", bar_key))
                 lines.append(("", 0))
+            if comments:
+                lines.append((" c writes a reply", curses.A_DIM))
         else:
             rel = self.related_pages(d["page"])
             if not rel:
                 lines.append((" No linked pages", curses.A_DIM))
-            for n, (prop, _, title) in enumerate(rel):
-                lines.append((" ↗ %s  (%s)" % (title or "untitled page", prop), self.on_attr("teal") if n == self.drow else self.paint("teal")))
+            last = None
+            for n, (prop, pid, title) in enumerate(rel):
+                if prop != last:
+                    if last is not None:
+                        lines.append(("", 0))
+                    lines.append((" " + prop.upper(), curses.A_DIM))
+                    last = prop
+                state = self.status_of_id(pid)
+                if n == self.drow:
+                    self.rel_line = len(lines)
+                lines.append((" ↗ %s" % (title or "untitled page"), self.on_attr("teal") if n == self.drow else self.paint("teal"), state))
+            if rel:
+                lines.append(("", 0))
+                lines.append((" Enter opens · ← comes back", curses.A_DIM))
         return lines
 
     def draw_detail(self):
@@ -1915,10 +1943,24 @@ class App:
         view = max(1, h - 3 - top)
         if self.dtab == 2:
             self.drow = max(0, min(self.drow, max(len(rel) - 1, 0)))
-            self.dscroll = max(0, min(self.drow - view + 1, len(lines) - view)) if lines else 0
+            at = getattr(self, "rel_line", self.drow)
+            self.dscroll = max(0, min(at - view + 1, len(lines) - view)) if lines else 0
         self.dscroll = max(0, min(self.dscroll, max(0, len(lines) - view)))
-        for r, (l, attr) in enumerate(lines[self.dscroll:self.dscroll + view]):
-            self.scr.addnstr(top + r, 0, l, w - 1, attr)
+        for r, (l, attr, *more) in enumerate(lines[self.dscroll:self.dscroll + view]):
+            extra, bar = (more + [None, None])[:2]
+            y_ = top + r
+            if bar and l.startswith(" ▎"):  # a comment: the bar and the name wear the author's color, the text stays plain
+                self.scr.addnstr(y_, 0, " ▎", 2, self.paint(bar))
+                self.scr.addnstr(y_, 2, l[2:], w - 3, attr)
+                if isinstance(extra, str) and extra:
+                    self.scr.addnstr(y_, 2 + nt.cell_width(l[2:]), extra, max(w - 3 - nt.cell_width(l[2:]), 0), curses.A_DIM)
+                continue
+            self.scr.addnstr(y_, 0, l, w - 1, attr)
+            if isinstance(extra, tuple):  # a linked page's status, at the right edge
+                mark, stext, sattr = extra
+                tail = "%s %s" % (mark, stext)
+                if nt.cell_width(l) + len(tail) + 3 < w:
+                    self.scr.addnstr(y_, w - len(tail) - 2, tail, len(tail), sattr)
         self.rule(h - 3, w)
         if len(lines) > view:
             ind = "%d%%" % min(100, 100 * (self.dscroll + view) // len(lines))
