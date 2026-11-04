@@ -1861,7 +1861,7 @@ class App:
         me = key(page.get("id", "")) or key(page.get("url", ""))
         return [r for r in nt.page_relations(page) if not me or key(r[1]) != me]
 
-    HEADER_RELATIONS = ("assignee", "reviewer", "qa", "project", "sprint", "sprints", "type", "initiative")
+    HEADER_RELATIONS = ("assignee", "reviewer", "qa", "project", "sprint", "sprints", "type", "initiative", "createdby", "created by")
 
     def related_links(self, page):
         """What the Related tab lists: linked pages without the page itself and without the relations the header already
@@ -1972,6 +1972,7 @@ class App:
                 lines.append((" c writes a reply", curses.A_DIM))
         else:
             rel = self.related_links(d["page"])
+            self.rel_urls = {}  # line index -> address, for f
             if not rel:
                 lines.append((" No linked tickets or documents. The people, project, sprint and type are in the header (i shows all).", curses.A_DIM))
             last = None
@@ -1984,6 +1985,7 @@ class App:
                 state = self.status_of_id(pid)
                 if n == self.drow:
                     self.rel_line = len(lines)
+                self.rel_urls[len(lines)] = self.notion_url(pid)
                 lines.append((" ↗ %s" % (title or "untitled page"), self.on_attr("teal") if n == self.drow else self.paint("teal"), state))
             if rel:
                 lines.append(("", 0))
@@ -1994,7 +1996,7 @@ class App:
         h, w = self.scr.getmaxyx()
         self.scr.erase()
         self.hits = []
-        self.link_runs = []
+        self.link_runs, self.link_cells = [], []
         page = self.detail["page"]
         mark, stext, sattr = self.status_cell(page)
         right = "%s %s" % (mark, stext)
@@ -2060,6 +2062,8 @@ class App:
         for r, (l, attr, *more) in enumerate(lines[self.dscroll:self.dscroll + view]):
             extra, bar = (more + [None, None])[:2]
             y_ = top + r
+            if self.dtab == 2 and (self.dscroll + r) in getattr(self, "rel_urls", {}):
+                self.link_cells.append((y_, 2, self.rel_urls[self.dscroll + r]))
             if isinstance(extra, list):  # runs of styled text: body rows
                 x_ = 0
                 for text_, f_ in extra:
@@ -2094,7 +2098,7 @@ class App:
                 self.scr.addnstr(y, x, letter, 1, curses.A_REVERSE | curses.A_BOLD)
             self.footer([("letter", "open that link"), ("Esc", "cancel")])
             return
-        self.footer([("s", "status"), ("e", "edit"), ("c", "comment"), ("1 2 3", "sections"), ("i", "info")] + ([("f", "open link"), ("U", "all links")] if getattr(self.client, "page_links", {}).get(page["id"]) else []) + [("d", "delegate"), ("o", "browser"), ("q", "back"), ("?", "more")])
+        self.footer([("s", "status"), ("e", "edit"), ("c", "comment"), ("1 2 3", "sections"), ("i", "info")] + ([("f", "open link"), ("U", "all links")] if getattr(self.client, "page_links", {}).get(page["id"]) or (self.dtab == 2 and getattr(self, "rel_urls", None)) else []) + [("d", "delegate"), ("o", "browser"), ("q", "back"), ("?", "more")])
 
     def footer(self, hints):
         h, w = self.scr.getmaxyx()
@@ -4375,13 +4379,21 @@ class App:
             seen[url] = self.LETTERS[len(seen)]
             mapping[seen[url]] = url
             spots.append((y, max(x - 1, 0), seen[url]))
+        for y, x, url in getattr(self, "link_cells", []):  # whole rows (Related): one letter each
+            if url not in seen and len(seen) >= len(self.LETTERS):
+                break
+            letter = seen[url] = seen.get(url) or self.LETTERS[len(seen)]
+            mapping[letter] = url
+            spots.append((y, max(x - 1, 0), letter))
         self.letter_spots = spots
         return mapping
 
     def open_links(self):
         """U (in a page): the web links in the body; pick one and it opens in the browser. The text of a link is drawn without
         its address, and a terminal cannot click what is wrapped over rows, so this is the dependable way."""
-        links = getattr(self.client, "page_links", {}).get(self.detail["page"]["id"]) or []
+        links = list(getattr(self.client, "page_links", {}).get(self.detail["page"]["id"]) or [])
+        for c_ in self.detail.get("comments") or []:  # the comments' links too, with who wrote them
+            links += [("%s: %s" % (c_.get("author", ""), t), u) for t, u in c_.get("links", [])]
         if not links:
             self.toast("no web links in this page", "info", 3)
             return

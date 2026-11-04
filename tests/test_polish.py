@@ -1748,5 +1748,48 @@ class BodyLeftovers(unittest.TestCase):
         self.assertEqual(self.render("go to /events/<id> now"), "go to /events/<id> now")
 
 
+
+class LinksEverywhere(unittest.TestCase):
+    def test_f_in_related_opens_the_linked_page_in_the_browser(self):
+        app, scr, a, b = PageSections.page_app(PageSections())
+        a["properties"]["GitHub PRs"] = {"type": "relation", "relation": [{"id": "https://app.notion.com/p/abc?x=1", "title": "ET-9 — Fix it"}]}
+        app.detail_key(ord("3"))
+        app.draw_detail()
+        opened = []
+        with mock.patch("webbrowser.open", lambda url: opened.append(url)):
+            app.detail_key(ord("f"))
+            self.assertTrue(app.letter_mode)
+            app.draw_detail()
+            y, x = scr.find("ET-9 — Fix it")
+            self.assertEqual(scr.grid[y][1], "d")  # the third row of the Related list
+            app.detail_key(ord("d"))
+        self.assertEqual(opened, ["https://app.notion.com/p/abc"])
+
+    def test_U_adds_the_links_of_the_comments_with_who_wrote_them(self):
+        app, scr = fresh()
+        app.detail = {"page": app.pages[0], "lines": [], "body": "x",
+                      "comments": [{"id": "c", "author": "Ana", "when": "2026-10-30T09:00:00Z", "text": "see it", "links": [("the PR", "https://github.com/o/r/pull/1")]}]}
+        shown, opened = [], []
+        app.popup = lambda title, items, start=0, at=None: (shown.extend(items), 0)[1]
+        with mock.patch("webbrowser.open", lambda url: opened.append(url)):
+            app.detail_key(ord("U"))
+        self.assertIn("Ana: the PR", shown[0])
+        self.assertEqual(opened, ["https://github.com/o/r/pull/1"])
+
+    def test_the_preview_text_reads_like_the_page(self):
+        from herdr_notion import mcpbackend as mb
+        lines = mb.markdown_lines('Agreed (<date start="2026-11-02" />) &amp; <mention url="https://x/p/z" /> and [spec](https://e.com)', {"https://x/p/z": "Other"})
+        self.assertEqual(lines, ["Agreed (2026-11-02) & ↗ Other and spec"])
+
+    def test_comments_keep_their_links_when_read(self):
+        from herdr_notion import mcpbackend as mb
+        class Fake:
+            def call(self, name, args=None):
+                return {"text": '<discussions><discussion id="d"><comment id="c" user-url="user://u1" datetime="2026-10-30T09:00:00.000Z">'
+                                'Closed in [PR 1](https://github.com/o/r/pull/1) and https://e.com/x</comment></discussion></discussions>'}
+        got = mb.McpClient("ds", Fake()).comments("https://x/p/1")
+        self.assertEqual(got[0]["links"], [("PR 1", "https://github.com/o/r/pull/1"), ("https://e.com/x", "https://e.com/x")])
+
+
 if __name__ == "__main__":
     unittest.main()

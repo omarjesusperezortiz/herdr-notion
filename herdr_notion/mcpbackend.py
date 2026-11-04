@@ -430,7 +430,7 @@ class McpClient:
     def body_lines(self, page_id):
         text = self._fetch_page(page_id)
         m = re.search(r"<content>\n?(.*?)\n?</content>", text, re.S)
-        return markdown_lines(m.group(1) if m else "")
+        return markdown_lines(m.group(1) if m else "", self._titles)
 
     def body_rich(self, page_id):
         """The body as lines with style toggles (see markdown_rich); page mentions are named by their titles (up to 12 lookups)."""
@@ -469,7 +469,7 @@ class McpClient:
         self.resolve_users({i for i in ids if i})
         self.resolve_titles({u.split("?")[0] for _, body in raw for u in re.findall(r'<mention url="(https?://[^"]+)"', body)})
         out = [{"id": a.get("id", ""), "author": self.author_name(a.get("user-url", "")), "when": a.get("datetime", ""),
-                "text": self.plain_comment(body)} for a, body in raw]
+                "text": self.plain_comment(body), "links": markdown_links(html.unescape(body), self._titles)} for a, body in raw]
         return sorted(out, key=lambda c: c["when"])
 
     def author_name(self, ref):
@@ -612,17 +612,9 @@ def markdown_rich(md, titles=None):
     return res
 
 
-def markdown_lines(md):
-    """Plain-text lines from Notion-flavoured markdown (tags and links stripped)."""
-    md = re.sub(r"<br\s*/?>", "\n", md)
-    md = re.sub(r"<mention[^>]*/>", "(link)", md)
-    md = re.sub(r"</?(callout|code|b|i|u|s|span|details|summary|columns?|toggle|table|tr|td|th|colgroup|col)[^>]*>", "", md)
-    md = re.sub(r"!?\[([^\]]*)\]\(([^)]*)\)", lambda m: m.group(1) or m.group(2), md)
-    lines = [unescape(l.rstrip()) for l in md.split("\n")]
+def markdown_lines(md, titles=None):
+    """Plain-text lines from Notion-flavoured markdown: the same reading as markdown_rich without the styling."""
+    lines = [nt.plain(l).replace(nt.CALLOUT, "") for l in markdown_rich(md, titles)]
     while lines and not lines[0]:
         lines.pop(0)
-    out = []
-    for l in lines:
-        if l or (out and out[-1]):
-            out.append(l)
-    return out
+    return lines
