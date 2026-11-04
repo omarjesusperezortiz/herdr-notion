@@ -1633,7 +1633,7 @@ class LinksInAPage(unittest.TestCase):
             app.detail_key(ord("U"))
         self.assertEqual(opened, ["https://example.test/o"])
         app.draw_detail()
-        self.assertTrue(scr.has("U links"))
+        self.assertTrue(scr.has("U all links"))
 
     def test_a_page_without_links_says_so(self):
         app, scr = fresh()
@@ -1679,6 +1679,55 @@ class ClickableLinks(unittest.TestCase):
         app.draw_detail()
         app.paint_links()  # the box is gone and the cells were redrawn: paint again
         self.assertEqual(len(painted), 2)
+
+
+
+class LinkLetters(unittest.TestCase):
+    def page(self):
+        app, scr = fresh(h=30, w=100)
+        from herdr_notion import mcpbackend as mb
+        md = 'See <mention url="https://x/p/a" /> and <mention url="https://x/p/b" /> end.'
+        titles = {"https://x/p/a": "Other page", "https://x/p/b": "Second page"}
+        rich = mb.markdown_rich(md, titles)
+        app.detail = {"page": app.pages[0], "lines": [], "body": "\n".join(nt.plain(x) for x in rich), "rich": rich, "comments": []}
+        app.client.page_links = {app.pages[0]["id"]: mb.markdown_links(md, titles)}
+        app.dtab = 0
+        app.draw_detail()
+        return app, scr
+
+    def test_f_puts_a_letter_before_each_link_and_the_letter_opens_it(self):
+        app, scr = self.page()
+        opened = []
+        with mock.patch("webbrowser.open", lambda url: opened.append(url)):
+            app.detail_key(ord("f"))
+            self.assertTrue(app.letter_mode)
+            app.draw_detail()
+            y, x = scr.find("↗ Other page")
+            self.assertEqual(scr.grid[y][x - 1], "a")
+            self.assertEqual(scr.attr_at(y, x - 1) & __import__("curses").A_REVERSE, __import__("curses").A_REVERSE)
+            self.assertTrue(scr.has("letter open that link"))
+            app.detail_key(ord("s"))  # the second link
+            self.assertEqual(opened, ["https://x/p/b"])
+            self.assertFalse(app.letter_mode)
+
+    def test_any_other_key_cancels_and_nothing_opens(self):
+        app, scr = self.page()
+        opened = []
+        with mock.patch("webbrowser.open", lambda url: opened.append(url)):
+            app.detail_key(ord("f"))
+            app.detail_key(ord("z"))  # not a letter in use
+            app.detail_key(ord("f"))
+            app.detail_key(27)
+        self.assertEqual(opened, [])
+        self.assertFalse(app.letter_mode)
+
+    def test_a_screen_without_links_says_so(self):
+        app, scr = fresh()
+        app.detail = {"page": app.pages[0], "lines": [], "body": "x", "comments": []}
+        app.draw_detail()
+        app.detail_key(ord("f"))
+        self.assertFalse(app.letter_mode)
+        self.assertIn("no links on this screen", app.toast_state["text"])
 
 
 if __name__ == "__main__":
