@@ -29,7 +29,7 @@ HELP = [
     ("Navigate", [("j/k, arrows", "move / scroll"), ("Enter", "open page"),
                   ("] / [", "next / previous page (in a page)"),
                   ("f, 1-9", "switch filter"), ("/", "type to narrow, Enter searches everything"), ("Esc", "remove the newest filter pill, then quit"), ("q", "quit")]),
-    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("N", "review the ticket drafts agents handed over (herdr-notion draft)"), ("n", "new ticket: a box with the fields you set (the tab you are on fills in what it keeps); Tab moves, ⇧Tab then ⏎ creates, ^N creates another, ^A asks an agent to draft it"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("Y", "next theme: default, light, high-contrast, mono (kept in the config)"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("X", "close the pane of this ticket's finished agent (asks first)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("i", "in a page: every property in a box (o opens, y copies the link)"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
+    ("Act", [("s", "change status (asks to confirm; on marked pages too)"), ("x", "mark a page; s then changes every marked page"), (">", "move to the next status"), ("e", "edit another property (asks to confirm)"), ("N", "review the ticket drafts agents handed over (herdr-notion draft)"), ("n", "new ticket: a box with the fields you set (the tab you are on fills in what it keeps); Tab moves, ⇧Tab then ⏎ creates, ^N creates another, ^A asks an agent to draft it"), ("c", "comment on the page you are reading"), ("D", "switch database"), ("d", "delegate to an agent"), ("O", "sort: newest edit, title, status"), ("g", "group by status; again folds the groups; again back to the plain list"), ("- / =", "fold or unfold the selected group / all groups"), ("p", "show or hide the preview pane"), ("M", "mouse on/off: click rows, cells, footer hints, column headers; right click for a menu; drag board cards"), ("+", "save the current view as a tab"), ("T", "manage tabs: rename, move, delete"), (":", "command palette"), ("z", "compact rows: colored bar instead of the status word"), ("F", "pick a status to show"), ("Ctrl-P, :", "go anywhere: pages, recents and commands in one box"), ("c", "choose and order the table's columns"), ("Y", "next theme: default, light, high-contrast, mono (kept in the config)"), ("u", "undo the last status change (for a minute)"), ("a", "show the agent's terminal in the preview instead of the ticket (a again goes back)"), ("A", "agents view: every agent and its ticket; a attaches one"), ("X", "close the pane of this ticket's finished agent (asks first)"), ("w", "new git worktree + branch named after the ticket, with an agent started in it"), ("L", "open a page linked from this one (← comes back)"), ("B", "board: a column per status (h l j k move, H L move the card)"), ("Q", "quick filter: changed today or this week, unread, no assignee, due this week"), ("[ ] , 0", "previous / next status chip, 0 shows all"), ("Tab / Shift-Tab", "next / previous tab (in a page: next / previous section: Body, Comments, Related; 1 2 3 jump)"), ("i", "in a page: every property in a box (o opens, y copies the link)"), ("U", "in a page: the web links in the body; pick one to open it in the browser"), ("→, l", "go into the preview (↑↓ scroll it, ← comes back); open the page when there is no preview"), ("V", "open a Notion view of this database"), ("J / K, Space, b", "scroll the preview / page the list"),
              ("o", "open in browser"), ("y", "copy page URL"), ("Y", "copy delegate prompt")]),
     ("Config", [("r", "refresh"), ("R", "reload config"), ("S", "connection: status, sign in, database, status property")]),
 ]
@@ -2084,7 +2084,7 @@ class App:
             self.scr.addnstr(h - 3, max(0, w - len(ind) - 2), ind, len(ind), curses.A_DIM)
         if self.show_props:
             self.props_box(page, h, w)
-        self.footer([("s", "status"), ("e", "edit"), ("c", "comment"), ("1 2 3", "sections"), ("i", "info"), ("d", "delegate"), ("o", "browser"), ("q", "back"), ("?", "more")])
+        self.footer([("s", "status"), ("e", "edit"), ("c", "comment"), ("1 2 3", "sections"), ("i", "info")] + ([("U", "links")] if getattr(self.client, "page_links", {}).get(page["id"]) else []) + [("d", "delegate"), ("o", "browser"), ("q", "back"), ("?", "more")])
 
     def footer(self, hints):
         h, w = self.scr.getmaxyx()
@@ -4352,6 +4352,20 @@ class App:
             return
         self.open_relation(rel[i][1])
 
+    def open_links(self):
+        """U (in a page): the web links in the body; pick one and it opens in the browser. The text of a link is drawn without
+        its address, and a terminal cannot click what is wrapped over rows, so this is the dependable way."""
+        links = getattr(self.client, "page_links", {}).get(self.detail["page"]["id"]) or []
+        if not links:
+            self.toast("no web links in this page", "info", 3)
+            return
+        from urllib.parse import urlparse
+        i = self.popup("Open a link in the browser", ["%s   %s" % (nt.clip(t, 46), urlparse(u).netloc.replace("www.", "")) for t, u in links])
+        if i is None:
+            return
+        webbrowser.open(links[i][1])
+        self.toast("opened in the browser", "ok", 2)
+
     def open_relation(self, pid):
         """Open a linked page; ← comes back to the page you were on."""
         self.note("Opening…")
@@ -4557,6 +4571,8 @@ class App:
             return True
         if k == ord("i"):
             self.show_props = True
+        elif k == ord("U"):
+            self.guard(self.open_links)
         elif k in (ord("q"), 27, curses.KEY_LEFT, ord("h")):
             if self.trail:  # came here from a related page: go back to it
                 self.open_page(self.trail.pop())

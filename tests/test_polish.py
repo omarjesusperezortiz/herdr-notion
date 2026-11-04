@@ -1611,3 +1611,36 @@ class RelatedIsOnlyWhatIsWorthFollowing(unittest.TestCase):
         self.assertIn("↗ ET-2544 · Test report", text)
         self.assertNotIn("<page", text)
         self.assertNotIn("notion.so", text)
+
+
+class LinksInAPage(unittest.TestCase):
+    MD = ('See [the spec](https://example.test/spec?x=1) and https://example.test/plain. and <mention url="https://www.notion.so/abc"/>\n'
+          '<page url="https://www.notion.so/def">\nET-1 · Report\n</page>\n[again](https://example.test/spec) <a href="https://example.test/not-bare">x</a>')
+
+    def test_links_come_out_in_reading_order_without_repeats(self):
+        from herdr_notion import mcpbackend as mb
+        got = mb.markdown_links(self.MD, {"https://www.notion.so/abc": "Other page"})
+        self.assertEqual(got, [("the spec", "https://example.test/spec?x=1"), ("https://example.test/plain", "https://example.test/plain"),
+                               ("Other page", "https://www.notion.so/abc"), ("ET-1 · Report", "https://www.notion.so/def")])
+
+    def test_U_lists_them_and_opens_the_one_you_pick_in_the_browser(self):
+        app, scr = fresh()
+        opened = []
+        app.detail = {"page": app.pages[0], "lines": [], "body": "x", "comments": []}
+        app.client.page_links = {app.pages[0]["id"]: [("the spec", "https://example.test/spec"), ("Other", "https://example.test/o")]}
+        app.popup = lambda title, items, start=0, at=None: (self.assertIn("example.test", items[0]), 1)[1]
+        with mock.patch("webbrowser.open", lambda url: opened.append(url)):
+            app.detail_key(ord("U"))
+        self.assertEqual(opened, ["https://example.test/o"])
+        app.draw_detail()
+        self.assertTrue(scr.has("U links"))
+
+    def test_a_page_without_links_says_so(self):
+        app, scr = fresh()
+        app.detail = {"page": app.pages[0], "lines": [], "body": "x", "comments": []}
+        app.detail_key(ord("U"))
+        self.assertEqual(app.toast_state["text"], "no web links in this page")
+
+
+if __name__ == "__main__":
+    unittest.main()

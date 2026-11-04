@@ -175,6 +175,7 @@ class McpClient:
         self._schema = None
         self._users = {}
         self._titles = {}
+        self.page_links = {}  # page id -> [(text, url)] of the body, filled by body_rich
         self.want = set()  # relation columns shown in the list: their target pages' titles get looked up
 
     # --- plumbing
@@ -441,6 +442,7 @@ class McpClient:
             if u not in urls:
                 urls.append(u)
         self.resolve_titles(urls[:12])
+        self.page_links[page_id] = markdown_links(md, self._titles)
         return markdown_rich(md, self._titles)
 
     def set_property(self, page_id, prop, value):
@@ -525,6 +527,27 @@ class McpClient:
                                           "page_size": limit, "max_highlight_length": 0})
         return [{"title": r.get("title") or "(untitled)", "url": r.get("url", "").split("?")[0]}
                 for r in (res.get("results", []) if isinstance(res, dict) else []) if r.get("type") == "page"]
+
+
+def markdown_links(md, titles=None):
+    """[(text, url)] for the web links in a page body, in reading order: [text](url), bare addresses, linked pages and mentions."""
+    titles = titles or {}
+    found = []
+    for m in re.finditer(r'<page\s+url="(https?://[^"]+)"[^>]*>(.*?)</page>', md, re.S):
+        found.append((m.start(), " ".join(m.group(2).split()), m.group(1)))
+    for m in re.finditer(r'<mention url="(https?://[^"]+)"', md):
+        found.append((m.start(), titles.get(m.group(1).split("?")[0], ""), m.group(1)))
+    for m in re.finditer(r"\[([^\]]*)\]\((https?://[^)\s]+)\)", md):
+        found.append((m.start(), m.group(1), m.group(2)))
+    for m in re.finditer(r'(?<![("\w=])https?://[^\s<>)"\]]+', md):
+        found.append((m.start(), "", m.group(0).rstrip(".,;:")))
+    out, seen = [], set()
+    for _, text, url in sorted(found):
+        key = url.split("?")[0].rstrip("/")
+        if key not in seen:
+            seen.add(key)
+            out.append((text or url, url))
+    return out
 
 
 def markdown_rich(md, titles=None):
