@@ -1,5 +1,6 @@
 """Notion data access through the hosted MCP server, shaped like the REST API objects the
 rest of the plugin already understands (schema, pages, blocks as plain-text lines)."""
+import html
 import json
 import re
 
@@ -441,7 +442,7 @@ class McpClient:
             u = u.split("?")[0]
             if u not in urls:
                 urls.append(u)
-        self.resolve_titles(urls[:12])
+        self.resolve_titles(urls[:30])
         self.page_links[page_id] = markdown_links(md, self._titles)
         return markdown_rich(md, self._titles)
 
@@ -484,7 +485,7 @@ class McpClient:
         body = re.sub(r'<mention url="user://([^"]+)"\s*/?>(?:</mention>)?', lambda m: "@" + self.author_name("user://" + m.group(1)), body)
         def page_mention(m):
             title = self._titles.get(m.group(1).split("?")[0], "")
-            return "↗ " + title if title else "(link)"
+            return "↗ " + (title or "linked page")
         body = re.sub(r'<mention url="(https?://[^"]+)"[^>]*?(?:/>|>.*?</mention>)', page_mention, body, flags=re.S)
         body = re.sub(r"<mention[^>]*/>|<mention[^>]*>.*?</mention>", "(link)", body, flags=re.S)
         body = re.sub(r"<br\s*/?>", "\n", body)
@@ -558,8 +559,10 @@ def markdown_rich(md, titles=None):
 
     def mention(m):
         title = titles.get(m.group(1).split("?")[0], "")
-        return nt.LINK + "↗ " + title + nt.LINK if title else "(link)"
+        return nt.LINK + "↗ " + (title or "linked page") + nt.LINK
     md = re.sub(r'<mention url="(https?://[^"]+)"[^>]*?(?:/>|>.*?</mention>)', mention, md, flags=re.S)
+    md = re.sub(r'<date\s+start="([^"]*)"(?:\s+end="([^"]*)")?[^>]*/?>(?:</date>)?', lambda m: m.group(1) + (" → " + m.group(2) if m.group(2) else ""), md)
+    md = re.sub(r"slackMessage://\S+", "(Slack message)", md)
     md = re.sub(r"<mention[^>]*/>|<mention[^>]*>.*?</mention>", "(link)", md, flags=re.S)
     md = re.sub(r'<page\s[^>]*?(?:/>|>(.*?)</page>)', lambda m: nt.LINK + "↗ " + " ".join((m.group(1) or "linked page").split()) + nt.LINK, md, flags=re.S)
     md = re.sub(r"</?(b|strong)>", nt.BOLD, md)
@@ -585,7 +588,7 @@ def markdown_rich(md, titles=None):
             l = re.sub(r"\[([^\]]*)\]\(([^)]*)\)", lambda m: nt.LINK + (m.group(1) or m.group(2)) + nt.LINK, l)
             l = re.sub(r"\*\*(.+?)\*\*", lambda m: nt.BOLD + m.group(1) + nt.BOLD, l)
             l = re.sub(r"(?<!`)`([^`]+)`(?!`)", lambda m: nt.CODE + m.group(1) + nt.CODE, l)
-        l = unescape(l)
+        l = html.unescape(unescape(l))
         if in_call and not l.strip():
             continue
         if in_call:

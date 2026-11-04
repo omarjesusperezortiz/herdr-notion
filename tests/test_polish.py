@@ -1720,5 +1720,33 @@ class LinkLetters(unittest.TestCase):
         self.assertIn("no links on this screen", app.toast_state["text"])
 
 
+
+class BodyLeftovers(unittest.TestCase):
+    """What a sweep of 40 real pages found leaking into the body text."""
+
+    def render(self, md, titles=None):
+        from herdr_notion import mcpbackend as mb
+        return "\n".join(nt.plain(x) for x in mb.markdown_rich(md, titles))
+
+    def test_a_date_mention_reads_as_the_date(self):
+        self.assertEqual(self.render('Agreed (Iskren, <date start="2026-11-02" />): go'), "Agreed (Iskren, 2026-11-02): go")
+        self.assertIn("2026-11-02 → 2026-11-08", self.render('Sprint <date start="2026-11-02" end="2026-11-08" />'))
+
+    def test_entities_are_decoded(self):
+        self.assertEqual(self.render("/terms?productId=1&amp;redirect=/x and &lt;id&gt;"), "/terms?productId=1&redirect=/x and <id>")
+
+    def test_slack_addresses_read_as_slack_message(self):
+        out = self.render("- Source: slackMessage://orange-pill.slack.com/C0837ESG41Y/1793702720.213699/1793702720.213699")
+        self.assertEqual(out, "- Source: (Slack message)")
+
+    def test_a_page_whose_title_is_unknown_still_reads_as_a_link(self):
+        out = self.render('Related: <mention url="https://x/p/unknown" />')
+        self.assertIn("↗ linked page", out)
+        self.assertNotIn("(link)", out)
+
+    def test_angle_brackets_that_are_just_text_stay(self):
+        self.assertEqual(self.render("go to /events/<id> now"), "go to /events/<id> now")
+
+
 if __name__ == "__main__":
     unittest.main()
