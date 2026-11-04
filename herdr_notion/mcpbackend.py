@@ -538,6 +538,7 @@ def markdown_rich(md, titles=None):
         return nt.LINK + "↗ " + title + nt.LINK if title else "(link)"
     md = re.sub(r'<mention url="(https?://[^"]+)"[^>]*?(?:/>|>.*?</mention>)', mention, md, flags=re.S)
     md = re.sub(r"<mention[^>]*/>|<mention[^>]*>.*?</mention>", "(link)", md, flags=re.S)
+    md = re.sub(r'<page\s[^>]*?(?:/>|>(.*?)</page>)', lambda m: nt.LINK + "↗ " + " ".join((m.group(1) or "linked page").split()) + nt.LINK, md, flags=re.S)
     md = re.sub(r"</?(b|strong)>", nt.BOLD, md)
     md = re.sub(r"</?(i|em)>", nt.ITALIC, md)
     md = re.sub(r"</?code>", nt.CODE, md)

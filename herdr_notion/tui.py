@@ -1860,6 +1860,20 @@ class App:
         me = key(page.get("id", "")) or key(page.get("url", ""))
         return [r for r in nt.page_relations(page) if not me or key(r[1]) != me]
 
+    HEADER_RELATIONS = ("assignee", "reviewer", "qa", "project", "sprint", "sprints", "type", "initiative")
+
+    def related_links(self, page):
+        """What the Related tab lists: linked pages without the page itself and without the relations the header already
+        shows (people, project, sprint, type), which are labels and not tickets to go and read."""
+        shown = {n.lower() for n in (self.cfg.get("summary") or self.SUMMARY)} | set(self.HEADER_RELATIONS)
+        return [r for r in self.related_pages(page) if r[0].lower() not in shown]
+
+    @staticmethod
+    def notion_url(ref):
+        """The address of a linked page: its url, or its id turned into one."""
+        ref = (ref or "").split("?")[0]
+        return ref if ref.startswith("http") else "https://www.notion.so/" + ref.replace("-", "")
+
     def run_attr(self, base, f):
         """Attribute of a run of body text: the line's own look plus bold, code, link and italic."""
         a = base
@@ -1956,9 +1970,9 @@ class App:
             if comments:
                 lines.append((" c writes a reply", curses.A_DIM))
         else:
-            rel = self.related_pages(d["page"])
+            rel = self.related_links(d["page"])
             if not rel:
-                lines.append((" No linked pages", curses.A_DIM))
+                lines.append((" No linked tickets or documents. The people, project, sprint and type are in the header (i shows all).", curses.A_DIM))
             last = None
             for n, (prop, pid, title) in enumerate(rel):
                 if prop != last:
@@ -1972,7 +1986,7 @@ class App:
                 lines.append((" ↗ %s" % (title or "untitled page"), self.on_attr("teal") if n == self.drow else self.paint("teal"), state))
             if rel:
                 lines.append(("", 0))
-                lines.append((" Enter opens · ← comes back", curses.A_DIM))
+                lines.append((" Enter opens it in the browser · → reads it here (← comes back)", curses.A_DIM))
         return lines
 
     def draw_detail(self):
@@ -2019,7 +2033,7 @@ class App:
             self.scr.addnstr(1, w - len(bar) - 1 + filled, bar[filled:], len(bar) - filled, curses.A_DIM)
         y += 1
         comments = self.detail.get("comments") or []
-        rel = self.related_pages(page)
+        rel = self.related_links(page)
         counts = (0, len(comments), len(rel))
         x = 1
         for n, name in enumerate(self.DETAIL_TABS):
@@ -3421,6 +3435,17 @@ class App:
         if argv:
             subprocess.run(argv, input=text.encode(), check=False)
 
+    def put(self, y, x, text, n, attr=0):
+        """addnstr that clips instead of raising when the text does not fit the pane (a short or narrow split)."""
+        h, w = self.scr.getmaxyx()
+        n = min(n, w - x - 1 if y == h - 1 else w - x)
+        if y < 0 or y >= h or x < 0 or x >= w or n <= 0:
+            return
+        try:
+            self.scr.addnstr(y, x, text, n, attr)
+        except curses.error:
+            pass
+
     def draw_signin(self, flow, note, boxed):
         """The sign-in screen. Returns (row, col, width) of the paste box."""
         h, w = self.scr.getmaxyx()
@@ -3429,43 +3454,48 @@ class App:
         inner = max(w - 8, 10)
         url = [flow.url[i:i + inner] for i in range(0, len(flow.url), inner)]
         roomy = h >= len(url) + 20
+        short = h < len(url) + 18  # a short pane (a split): drop the explanations, keep the three steps
         y = 1
-        self.scr.addnstr(y, x, "Sign in to Notion", w - 3, curses.A_BOLD)
-        self.scr.addnstr(y + 1, x, "─" * min(w - 4, 64), w - 3, curses.A_DIM)
+        self.put(y, x, "Sign in to Notion", w - 3, curses.A_BOLD)
+        self.put(y + 1, x, "─" * min(w - 4, 64), w - 3, curses.A_DIM)
         y += 3
-        self.scr.addnstr(y, x, "1  Open this link in your browser", w - 3, curses.A_BOLD)
+        self.put(y, x, "1  Open this link in your browser", w - 3, curses.A_BOLD)
         y += 1
         link_rows = []
         for piece in url:
-            self.scr.addnstr(y, x + 3, piece, w - 6, self.cp(2))
+            self.put(y, x + 3, piece, w - 6, self.cp(2))
             link_rows.append((y, x + 3, piece))
             y += 1
-        self.scr.addnstr(y, x + 3, "Cmd/Ctrl+click it · o opens it here · c copies it", w - 6, curses.A_DIM)
+        self.put(y, x + 3, "Cmd/Ctrl+click it · o opens it here · c copies it", w - 6, curses.A_DIM)
         y += 2
         if roomy:
-            self.scr.addnstr(y, x, "2  Choose a workspace and approve", w - 3, curses.A_BOLD)
+            self.put(y, x, "2  Choose a workspace and approve", w - 3, curses.A_BOLD)
             y += 2
-        self.scr.addnstr(y, x, "3  Finish", w - 3, curses.A_BOLD)
+        self.put(y, x, "3  Finish", w - 3, curses.A_BOLD)
         y += 1
         for line in ("Browser on this machine: nothing to do, this screen carries on by itself.",
                      "Browser on another machine: it ends on a page that will not load.",
                      "Copy that page's address and paste it in the box (press p first):"):
-            self.scr.addnstr(y, x + 3, line, w - 6, curses.A_DIM if "another" not in line else 0)
+            if short and "another" not in line:
+                continue
+            self.put(y, x + 3, line, w - 6, curses.A_DIM if "another" not in line else 0)
             y += 1
-        y += 1
+        y += 0 if short else 1
         bw = max(min(w - 8, 90), 20)
         attr = curses.A_BOLD if boxed else 0
-        self.scr.addnstr(y, x + 3, "╭" + "─" * (bw - 2) + "╮", bw, attr)
-        self.scr.addnstr(y + 1, x + 3, "│", 1, attr)
-        self.scr.addnstr(y + 1, x + 3 + bw - 1, "│", 1, attr)
+        self.put(y, x + 3, "╭" + "─" * (bw - 2) + "╮", bw, attr)
+        self.put(y + 1, x + 3, "│", 1, attr)
+        self.put(y + 1, x + 3 + bw - 1, "│", 1, attr)
         if not boxed:
-            self.scr.addnstr(y + 1, x + 5, "press p, then paste the address here", bw - 4, curses.A_DIM)
-        self.scr.addnstr(y + 2, x + 3, "╰" + "─" * (bw - 2) + "╯", bw, attr)
-        box = (y + 1, x + 5, bw - 4)
+            self.put(y + 1, x + 5, "press p, then paste the address here", bw - 4, curses.A_DIM)
+        self.put(y + 2, x + 3, "╰" + "─" * (bw - 2) + "╯", bw, attr)
+        box = (min(y + 1, max(h - 3, 0)), x + 5, bw - 4)
         y += 4
+        if h < 12:  # nothing fits: say what to do instead of a half screen
+            self.put(h // 2, x, "Make this pane taller to sign in", w - 3, curses.A_BOLD)
         if note and y < h - 1:
-            self.scr.addnstr(y, x + 3, note, w - 6, curses.A_BOLD)
-        self.scr.addnstr(h - 1, 0, " p paste address   o open link   c copy link   Esc cancel".ljust(w - 1), w - 1, curses.A_REVERSE)
+            self.put(y, x + 3, note, w - 6, curses.A_BOLD)
+        self.put(h - 1, 0, " p paste address   o open link   c copy link   Esc cancel".ljust(w - 1), w - 1, curses.A_REVERSE)
         self.scr.refresh()
         for ly, lx, text in link_rows:  # every piece of the long link is clickable and points at the whole link
             self.link(ly, lx, text, flow.url)
@@ -4313,7 +4343,7 @@ class App:
                 page = self.client.get_page(page["id"])
             except nt.NotionError:
                 pass
-        rel = self.related_pages(page) if page else []
+        rel = self.related_links(page) if page else []
         if not rel:
             self.msg = "this page has no linked pages"
             return
@@ -4547,10 +4577,15 @@ class App:
                 self.drow = max(0, self.drow - 1)
             else:
                 self.dscroll = max(0, self.dscroll - 1)
-        elif k in (10, 13, curses.KEY_ENTER) and self.dtab == 2:
-            rel = self.related_pages(self.detail["page"])
+        elif k in (10, 13, curses.KEY_ENTER, curses.KEY_RIGHT, ord("l")) and self.dtab == 2:
+            rel = self.related_links(self.detail["page"])
             if rel:
-                self.guard(self.open_relation, rel[min(self.drow, len(rel) - 1)][1])
+                ref = rel[min(self.drow, len(rel) - 1)][1]
+                if k in (10, 13, curses.KEY_ENTER):  # a link goes to the browser: reading page after page in here gets lost
+                    webbrowser.open(self.notion_url(ref))
+                    self.toast("opened in the browser", "ok", 2)
+                else:
+                    self.guard(self.open_relation, ref)
         elif k in (curses.KEY_NPAGE, ord(" ")):
             self.dscroll += h - 3
         elif k == curses.KEY_PPAGE:

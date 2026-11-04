@@ -921,11 +921,15 @@ class PageSections(unittest.TestCase):
         app.draw_detail()
         self.assertTrue(scr.has("↗ " + nt.page_title(b)))
         self.assertTrue(scr.has("Other page"))
-        opened = []
+        opened, browser = [], []
         app.client.get_page = lambda pid: {"id": pid, "properties": {}}
         app.open_page = lambda page: opened.append(page["id"])
         app.detail_key(ord("j"))
-        app.detail_key(10)
+        with mock.patch("webbrowser.open", lambda url: browser.append(url)):
+            app.detail_key(10)  # Enter sends a link to the browser: no page after page inside the pane
+            self.assertEqual(opened, [])
+            self.assertEqual(browser, ["https://www.notion.so/other"])
+            app.detail_key(curses.KEY_RIGHT)  # → reads it here
         self.assertEqual(opened, ["other"])
         self.assertEqual(app.trail, [a])
 
@@ -950,7 +954,7 @@ class PageSections(unittest.TestCase):
         app.detail_key(ord("3"))
         scr.clear()
         app.draw_detail()
-        self.assertTrue(scr.has("No linked pages"))
+        self.assertTrue(scr.has("No linked tickets or documents"))
 
     def test_comments_still_loading_say_so(self):
         app, scr, _, _ = self.page_app()
@@ -999,13 +1003,16 @@ class PageSections(unittest.TestCase):
         self.assertTrue(scr.has("▎Ana"))
         self.assertTrue(scr.has("▎ Reproduced it."))
         self.assertTrue(scr.has("c writes a reply"))
-        a["properties"]["Project"] = {"type": "relation", "relation": [{"id": "https://x/p/pr", "title": "Checkout"}]}
+        a["properties"]["Blocked by"] = {"type": "relation", "relation": [{"id": "https://x/p/pr", "title": "Payment rewrite"}]}
+        a["properties"]["Project"] = {"type": "relation", "relation": [{"id": "https://x/p/pj", "title": "Checkout"}]}
         app.dtab = 2
         app.draw_detail()
         self.assertTrue(scr.has("RELATED"))
-        self.assertTrue(scr.has("PROJECT"))
-        self.assertTrue(scr.has("↗ Checkout"))
-        self.assertTrue(scr.has("Enter opens"))
+        self.assertTrue(scr.has("BLOCKED BY"))
+        self.assertTrue(scr.has("↗ Payment rewrite"))
+        self.assertFalse(scr.has("PROJECT"))  # the project is a label in the header, not a page to go and read
+        self.assertFalse(scr.has("↗ Checkout"))
+        self.assertTrue(scr.has("Enter opens it in the browser"))
 
     def test_the_body_keeps_bold_code_links_callouts_and_page_titles(self):
         app, scr, a, _ = self.page_app()
@@ -1560,3 +1567,47 @@ class DelegateLinkOnly(unittest.TestCase):
         with mock.patch("herdr_notion.delegate.list_agents", lambda *a, **k: []):
             self.app.delegate()
         self.assertEqual(titles, ["Send “Alpha” to…"])
+
+
+class SignInInASmallPane(unittest.TestCase):
+    """A peer's pane was short and the sign-in screen crashed with 'addnwstr() returned ERR'."""
+
+    def strict_screen(self, h, w):
+        from tests.support import FakeScreen
+
+        class Strict(FakeScreen):
+            def addnstr(self, y, x, text, n, attr=0):
+                if y < 0 or y >= self.h or x < 0 or x >= self.w:
+                    raise __import__("curses").error("addnwstr() returned ERR")
+                super().addnstr(y, x, text, n, attr)
+        return Strict(h, w)
+
+    def test_no_pane_size_crashes_the_sign_in_screen(self):
+        from unittest import mock
+        from herdr_notion.tui import App
+        for h, w in ((8, 40), (12, 60), (14, 80), (16, 50), (20, 100), (6, 20), (24, 30)):
+            with mock.patch("curses.curs_set", lambda n: None):
+                app = App(self.strict_screen(h, w))
+            app.link = lambda *a, **k: None  # the real one writes terminal hyperlink codes to stdout
+            flow = mock.Mock(url="https://mcp.notion.com/authorize?" + "x" * 300)
+            try:
+                app.draw_signin(flow, "a note", False)
+                app.draw_signin(flow, "", True)
+            except Exception as e:
+                self.fail("%dx%d: %s" % (h, w, e))
+
+
+class RelatedIsOnlyWhatIsWorthFollowing(unittest.TestCase):
+    def test_people_project_sprint_and_type_are_left_to_the_header(self):
+        app, scr = fresh()
+        page_ = {"id": "p", "properties": {n: {"type": "relation", "relation": [{"id": "https://x/%s" % n, "title": n + " page"}]}
+                                           for n in ("Assignee", "Project", "Sprints", "Type", "Blocked by", "GitHub PRs")}}
+        self.assertEqual([r[0] for r in app.related_links(page_)], ["Blocked by", "GitHub PRs"])
+
+    def test_page_blocks_in_a_body_read_as_a_title_not_as_a_tag(self):
+        from herdr_notion import mcpbackend as mb
+        rich = mb.markdown_rich('<page url="https://www.notion.so/409b">\nET-2544 · Test report\n</page>\n<page url="https://x/y"/>')
+        text = "\n".join(nt.plain(x) for x in rich)
+        self.assertIn("↗ ET-2544 · Test report", text)
+        self.assertNotIn("<page", text)
+        self.assertNotIn("notion.so", text)
