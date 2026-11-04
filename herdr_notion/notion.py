@@ -269,6 +269,29 @@ def relative_time(iso, now=None):
     return "now"
 
 
+def match_links(runs, links):
+    """[(y, x, text, url)] for the drawn runs of linked text: `runs` is [(row, column, text)], `links` the page's [(text, url)] in
+    reading order. A title wrapped over two rows is two runs; both find the same link. Repeated words take the links in order."""
+    norm = lambda t: " ".join(t.replace("↗", "").split())
+    names = [(norm(t), u) for t, u in links]
+    out, pos = [], 0
+    for y, x, text in runs:
+        frag = norm(text)
+        if not frag:
+            continue
+        order = list(range(pos, len(names))) + list(range(pos))
+        pick = next((i for i in order if names[i][0] == frag), None)
+        if pick is None:
+            pick = next((i for i in order if names[i][0].startswith(frag)), None)
+        if pick is None:
+            pick = next((i for i in order if frag in names[i][0]), None)
+        if pick is None:
+            continue
+        pos = pick
+        out.append((y, x + len(text) - len(text.lstrip()), text.strip(), names[pick][1]))
+    return out
+
+
 def short_stamp(iso):
     """'Oct 30, 09:00' (UTC) for an ISO-8601 timestamp; '' if unparsable."""
     from datetime import datetime

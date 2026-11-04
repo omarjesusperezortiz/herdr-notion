@@ -1642,5 +1642,44 @@ class LinksInAPage(unittest.TestCase):
         self.assertEqual(app.toast_state["text"], "no web links in this page")
 
 
+
+class ClickableLinks(unittest.TestCase):
+    LINKS = [("Modo accesibilidad: ofrecer diferentes modos y vistas de accesibilidad para mejorar la experiencia de los alumnos.", "https://n/a"),
+             ("Companion Service", "https://n/b"), ("[Companion Service] — Define Blink path", "https://n/c")]
+
+    def test_a_title_wrapped_over_two_rows_links_both_rows_to_the_same_page(self):
+        runs = [(5, 3, "↗ Modo accesibilidad: ofrecer diferentes modos y vistas de accesibilidad para"), (6, 5, "mejorar la experiencia de los alumnos.")]
+        got = nt.match_links(runs, self.LINKS)
+        self.assertEqual([(y, x, u) for y, x, _, u in got], [(5, 3, "https://n/a"), (6, 5, "https://n/a")])
+
+    def test_repeated_words_take_the_links_in_order_and_an_exact_title_wins(self):
+        got = nt.match_links([(1, 0, "↗ Companion Service"), (2, 0, "↗ [Companion Service] — Define Blink path")], self.LINKS)
+        self.assertEqual([u for *_, u in got], ["https://n/b", "https://n/c"])
+
+    def test_the_body_links_are_painted_once_and_not_under_a_box(self):
+        app, scr = fresh(h=30, w=100)
+        from herdr_notion import mcpbackend as mb
+        pid = app.pages[0]["id"]
+        rich = mb.markdown_rich('See <mention url="https://x/p/a" /> now.', {"https://x/p/a": "Other page"})
+        app.detail = {"page": app.pages[0], "lines": [], "body": "\n".join(nt.plain(x) for x in rich), "rich": rich, "comments": []}
+        app.client.page_links = {pid: mb.markdown_links('See <mention url="https://x/p/a" />', {"https://x/p/a": "Other page"})}
+        painted = []
+        app.link = lambda y, x, text, url: painted.append((text, url))
+        app.dtab = 0
+        app.draw_detail()
+        app.paint_links()
+        self.assertEqual(painted, [("↗ Other page", "https://x/p/a")])
+        app.paint_links()  # nothing changed: not written again
+        self.assertEqual(len(painted), 1)
+        app.show_props = True
+        app.draw_detail()
+        app.paint_links()  # a box is over the page: leave it alone
+        self.assertEqual(len(painted), 1)
+        app.show_props = False
+        app.draw_detail()
+        app.paint_links()  # the box is gone and the cells were redrawn: paint again
+        self.assertEqual(len(painted), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
