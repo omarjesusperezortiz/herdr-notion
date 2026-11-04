@@ -1569,22 +1569,6 @@ class App:
         self.toast("%s is now on “%s”" % (agent["name"] or agent["agent"], nt.clip(nt.page_title(page), 40)))
 
     # ------------------------------------------------------------ board
-    def paint_links(self):
-        """After a screen is on the display: make the linked text of the body (`↗ Page title`, [text](url)) real terminal
-        hyperlinks, so Cmd/Ctrl+click works on them. Curses cannot draw those, so they are written over the cells that
-        are already there; only when something drew over them and they changed since the last time."""
-        runs = getattr(self, "link_runs", [])
-        if not self.detail or self.dtab != 0 or self.show_props or self.live_toast() or not runs:
-            self.links_painted = None
-            return
-        links = getattr(self.client, "page_links", {}).get(self.detail["page"]["id"]) or []
-        key = (self.detail["page"]["id"], tuple(runs))
-        if not links or key == getattr(self, "links_painted", None):
-            return
-        self.links_painted = key
-        for y, x, text, url in nt.match_links(runs, links):
-            self.link(y, x, text, url)
-
     def redraw(self):
         (self.draw_detail if self.detail else self.draw_agents if self.agents_view else self.draw_board if self.board else self.draw_list)()
         self.draw_toast()
@@ -4341,7 +4325,6 @@ class App:
                 self.guard(self.offer_review)
             self.redraw()
             self.scr.refresh()
-            self.paint_links()
             self.scr.timeout(100 if self.job else 500 if self.wide() else 1000)
             k = self.scr.getch()
             if k == -1 or k == curses.KEY_RESIZE:

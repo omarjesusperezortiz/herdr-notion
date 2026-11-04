@@ -153,7 +153,7 @@ source and queries `POST /v1/data_sources/{id}/query`.
 | `N` | review ticket drafts agents handed over: the new-ticket box, filled in, saying who drafted it and why; values are checked against the database (a wrong option shows in red). `Esc` keeps the draft, `^D` discards it. The footer counts the drafts waiting |
 | `d` | delegate: pick a running agent (status, cwd) or **+ start new agent…**, then a box in the middle asks for an optional note, which goes above the task's link, and a second box shows exactly what will be sent (`⏎` sends, `Esc` cancels at either step; `ask_note = false` in `[delegate]` skips both and sends the task as it is) |
 | `f` (in a page) | a letter appears before every link on the screen (`↗ Page title`, `[text](url)`); press that letter and the link opens in the browser, `Esc` cancels. It needs no terminal support for links, which is why it works where Cmd/Ctrl+click does not |
-| `U` (in a page) | the web links in the body, in reading order with their site; pick one and it opens in the browser. The linked text in the body (`↗ Page title`, `[text](url)`) is also a real terminal hyperlink, so Cmd/Ctrl+click works on it in terminals that support them (with herdr's `ui.mouse_capture` off, the default); `U` is the way when yours does not |
+| `U` (in a page) | the web links in the body, in reading order with their site; pick one and it opens in the browser. Use `f` for the links on the screen |
 | `o` | open the page in the browser |
 | `]` / `[` | next / previous page while reading one |
 | `y` / `Y` | copy the page URL / the delegate prompt (pbcopy, wl-copy, xclip or xsel) |
